@@ -21,6 +21,7 @@ from langgraph.graph import END, StateGraph
 from loguru import logger
 
 from agents.triage import triage_node
+from agents.version_resolver import version_resolver_node
 from state import AgentState
 
 
@@ -46,8 +47,13 @@ def triage(state: AgentState) -> AgentState:
 def version_resolver(state: AgentState) -> AgentState:
     """
     Iteration 4: Resolve next/greatest safe version from Fortify recommendations.
+    Client is injected via closure when the graph is invoked — see fortifyai.py.
+    Stub until client is bound; delegates to agents.version_resolver.version_resolver_node.
     """
-    return _stub("VersionResolver", state)
+    client = state.get("_client")  # type: ignore[attr-defined]
+    if client is None:
+        return _stub("VersionResolver", state)
+    return version_resolver_node(state, client)
 
 
 def context_agent(state: AgentState) -> AgentState:
