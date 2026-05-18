@@ -22,6 +22,7 @@ from loguru import logger
 
 from agents.triage import triage_node
 from agents.version_resolver import version_resolver_node
+from agents.context import context_node
 from state import AgentState
 
 
@@ -59,8 +60,12 @@ def version_resolver(state: AgentState) -> AgentState:
 def context_agent(state: AgentState) -> AgentState:
     """
     Iteration 5: Locate dep in codebase — pom files + calling Java files.
+    Delegates to agents.context.context_node.
     """
-    return _stub("Context", state)
+    project_path = state.get("_project_path")  # type: ignore[attr-defined]
+    if project_path is None:
+        return _stub("Context", state)
+    return context_node(state, project_path)
 
 
 def api_diff_agent(state: AgentState) -> AgentState:
