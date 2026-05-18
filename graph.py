@@ -25,6 +25,7 @@ from agents.version_resolver import version_resolver_node
 from agents.context import context_node
 from agents.api_diff import api_diff_node
 from agents.ai_reasoning import ai_reasoning_node, route_from_reasoning
+from agents.adr_fix import adr_fix_node
 from state import AgentState
 
 
@@ -97,8 +98,14 @@ def ai_reasoning_agent(state: AgentState) -> AgentState:
 def adr_fix_agent(state: AgentState) -> AgentState:
     """
     Iteration 8: Invoke adr.py --commit --push, parse exit code + branch.
+    Delegates to agents.adr_fix.adr_fix_node.
     """
-    return _stub("AdrFix", state)
+    adr_path = state.get("_adr_path")          # type: ignore[attr-defined]
+    project_path = state.get("_project_path")  # type: ignore[attr-defined]
+    jira_prefix = state.get("_jira_prefix", "FORTIFY")  # type: ignore[attr-defined]
+    if adr_path is None or project_path is None:
+        return _stub("AdrFix", state)
+    return adr_fix_node(state, adr_path, project_path, jira_prefix)
 
 
 def failure_analysis_agent(state: AgentState) -> AgentState:
@@ -176,10 +183,20 @@ def route_build_result(
     state: AgentState,
 ) -> Literal["pr_agent", "failure_analysis", "escalate"]:
     """
-    Iteration 8 will implement exit-code routing.
-    Stub: always pass.
+    Iteration 8: Route based on ADR exit code.
+    Reads state["adr_result"] set by adr_fix_node.
     """
-    return "pr_agent"
+    adr_result = state.get("adr_result")
+    if adr_result is None:
+        return "pr_agent"   # stub fallback
+    if adr_result.get("success"):
+        return "pr_agent"
+    # Build failed — check retry budget
+    retry_count = state.get("retry_count", 0)
+    max_retries = 3  # matches config default; Iteration 9 will read from config
+    if retry_count >= max_retries:
+        return "escalate"
+    return "failure_analysis"
 
 
 def route_retry(
