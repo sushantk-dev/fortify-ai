@@ -156,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     state = initial_state(args.release)
     logger.info(f"[State] ✅ Initial state constructed for release {args.release}")
 
-    # ── Iteration 2 + 3: Fetch vulnerabilities then triage them ─────────────
+    # ── Iterations 2–4: Fetch → Triage → Resolve versions ───────────────────
     try:
         client = FortifyClient.from_config(config)
         logger.info("[Client] ✅ FortifyClient initialised")
@@ -176,26 +176,60 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    # Inject raw API data into state for the triage node
-    state["_raw_vulnerabilities"] = raw_vulns  # type: ignore[typeddict-unknown-key]
-
-    # Run triage node directly (full graph.invoke() wired in later iterations)
+    # Triage
     from agents.triage import group_by_dependency
     groups = group_by_dependency(raw_vulns)
 
-    logger.info("─" * 60)
     if not groups:
         logger.warning("[Triage] No actionable findings — nothing to remediate")
-    else:
-        logger.info(
-            f"[Triage] ✅ {len(groups)} unique dep(s) queued for remediation"
+        return 0
+
+    logger.info("─" * 60)
+
+    # Version resolution
+    from agents.version_resolver import resolve_all_groups
+    resolved_groups = resolve_all_groups(client, args.release, groups)
+
+    logger.info("─" * 60)
+
+    # Context resolution
+    from agents.context import locate_all_groups
+    from pathlib import Path
+    context_groups = locate_all_groups(Path(config.project_path), resolved_groups)
+
+    logger.info("─" * 60)
+
+    # API diff
+    from agents.api_diff import run_api_diff_all_groups
+    diff_groups = run_api_diff_all_groups(
+        context_groups, Path(config.project_path), config.japicmp_jar_path
+    )
+
+    logger.info("─" * 60)
+
+    # AI reasoning
+    from agents.ai_reasoning import reason_all_groups
+    reasoned_groups = reason_all_groups(diff_groups, config.gcp_project, config.gcp_location)
+
+    logger.info("─" * 60)
+
+    # ADR fix — run for each actionable group
+    from agents.adr_fix import run_adr_fix
+    for group in reasoned_groups:
+        if group.get("next_node") == "escalate":
+            logger.warning(
+                f"[ADR Fix] Skipping {group['parsed']['artifact_id']} — escalated by AI reasoning"
+            )
+            continue
+        run_adr_fix(
+            group,
+            adr_path=config.adr_path,
+            project_path=config.project_path,
+            jira_prefix=config.jira_id_prefix,
         )
 
     logger.info("─" * 60)
-    logger.info("Iteration 3 ✅  Vulnerabilities fetched and triaged — exiting")
-    logger.info(
-        "Next step: implement Iteration 4 (Version Resolver) to extract safe upgrade versions."
-    )
+    logger.info("Iteration 11 ✅  Pipeline complete — all iterations implemented")
     logger.info("─" * 60)
 
     return 0

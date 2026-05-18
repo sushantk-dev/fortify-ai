@@ -29,6 +29,7 @@ from agents.adr_fix import adr_fix_node
 from agents.failure_analysis import failure_analysis_node, decide_retry_route
 from agents.ai_code_fix import ai_code_fix_node
 from agents.pr_agent import pr_agent_node
+from agents.fortify_writeback import fortify_writeback_node
 from state import AgentState
 
 
@@ -152,8 +153,12 @@ def pr_agent(state: AgentState) -> AgentState:
 def fortify_writeback_agent(state: AgentState) -> AgentState:
     """
     Iteration 11: Post fix outcome comment back to each Fortify vulnerability.
+    Delegates to agents.fortify_writeback.fortify_writeback_node.
     """
-    return _stub("FortifyWriteback", state)
+    client = state.get("_fortify_client")  # type: ignore[attr-defined]
+    if client is None:
+        return _stub("FortifyWriteback", state)
+    return fortify_writeback_node(state, client)
 
 
 def escalate(state: AgentState) -> AgentState:
