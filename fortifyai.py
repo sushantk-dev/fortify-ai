@@ -15,6 +15,7 @@ import sys
 from loguru import logger
 
 from config import FortifyAIConfig, load_config
+from fortify_client import FortifyClient
 from graph import get_compiled_graph
 from state import AgentState
 
@@ -155,15 +156,28 @@ def main(argv: list[str] | None = None) -> int:
     state = initial_state(args.release)
     logger.info(f"[State] ✅ Initial state constructed for release {args.release}")
 
-    # ── Iteration 1 complete ──────────────────────────────────────────────────
-    # In later iterations we will call:
-    #   final_state = graph.invoke(state)
-    # For now we just confirm everything initialised correctly and exit.
+    # ── Iteration 2: Fortify API Layer ───────────────────────────────────────
+    try:
+        client = FortifyClient.from_config(config)
+        logger.info("[Client] ✅ FortifyClient initialised")
+    except Exception as exc:
+        logger.error(f"[Client] ❌ Failed to build FortifyClient: {exc}")
+        return 1
 
     logger.info("─" * 60)
-    logger.info("Iteration 1 ✅  Config loaded, graph registered — exiting")
+    try:
+        client.print_vulnerability_summary(args.release)
+    except Exception as exc:
+        logger.error(f"[Client] ❌ API call failed: {exc}")
+        logger.error(
+            "Check FORTIFY_BASE_URL and FORTIFY_API_TOKEN in your .env file."
+        )
+        return 1
+
+    logger.info("─" * 60)
+    logger.info("Iteration 2 ✅  Vulnerabilities fetched — exiting")
     logger.info(
-        "Next step: implement Iteration 2 (Fortify API Layer) to fetch real vulnerabilities."
+        "Next step: implement Iteration 3 (Triage Agent) to filter and group findings."
     )
     logger.info("─" * 60)
 
