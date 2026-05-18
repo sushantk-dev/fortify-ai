@@ -20,6 +20,7 @@ from typing import Literal
 from langgraph.graph import END, StateGraph
 from loguru import logger
 
+from agents.triage import triage_node
 from state import AgentState
 
 
@@ -37,8 +38,9 @@ def _stub(name: str, state: AgentState) -> AgentState:
 def triage(state: AgentState) -> AgentState:
     """
     Iteration 3: Filter findings — skip suppressed / non-OSS / non-fixable.
+    Delegates to agents.triage.triage_node.
     """
-    return _stub("Triage", state)
+    return triage_node(state)
 
 
 def version_resolver(state: AgentState) -> AgentState:

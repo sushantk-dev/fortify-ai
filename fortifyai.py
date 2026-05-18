@@ -156,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     state = initial_state(args.release)
     logger.info(f"[State] ✅ Initial state constructed for release {args.release}")
 
-    # ── Iteration 2: Fortify API Layer ───────────────────────────────────────
+    # ── Iteration 2 + 3: Fetch vulnerabilities then triage them ─────────────
     try:
         client = FortifyClient.from_config(config)
         logger.info("[Client] ✅ FortifyClient initialised")
@@ -165,8 +165,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     logger.info("─" * 60)
+
     try:
-        client.print_vulnerability_summary(args.release)
+        raw_vulns = client.get_vulnerabilities(args.release)
+        logger.info(f"Fetched {len(raw_vulns)} vulnerabilities")
     except Exception as exc:
         logger.error(f"[Client] ❌ API call failed: {exc}")
         logger.error(
@@ -174,10 +176,25 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    # Inject raw API data into state for the triage node
+    state["_raw_vulnerabilities"] = raw_vulns  # type: ignore[typeddict-unknown-key]
+
+    # Run triage node directly (full graph.invoke() wired in later iterations)
+    from agents.triage import group_by_dependency
+    groups = group_by_dependency(raw_vulns)
+
     logger.info("─" * 60)
-    logger.info("Iteration 2 ✅  Vulnerabilities fetched — exiting")
+    if not groups:
+        logger.warning("[Triage] No actionable findings — nothing to remediate")
+    else:
+        logger.info(
+            f"[Triage] ✅ {len(groups)} unique dep(s) queued for remediation"
+        )
+
+    logger.info("─" * 60)
+    logger.info("Iteration 3 ✅  Vulnerabilities fetched and triaged — exiting")
     logger.info(
-        "Next step: implement Iteration 3 (Triage Agent) to filter and group findings."
+        "Next step: implement Iteration 4 (Version Resolver) to extract safe upgrade versions."
     )
     logger.info("─" * 60)
 
