@@ -23,6 +23,7 @@ from loguru import logger
 from agents.triage import triage_node
 from agents.version_resolver import version_resolver_node
 from agents.context import context_node
+from agents.api_diff import api_diff_node
 from state import AgentState
 
 
@@ -71,8 +72,13 @@ def context_agent(state: AgentState) -> AgentState:
 def api_diff_agent(state: AgentState) -> AgentState:
     """
     Iteration 6: Run japicmp, parse breaking changes, map to calling files.
+    Delegates to agents.api_diff.api_diff_node.
     """
-    return _stub("ApiDiff", state)
+    project_path = state.get("_project_path")  # type: ignore[attr-defined]
+    japicmp_jar = state.get("_japicmp_jar")    # type: ignore[attr-defined]
+    if project_path is None or japicmp_jar is None:
+        return _stub("ApiDiff", state)
+    return api_diff_node(state, project_path, japicmp_jar)
 
 
 def ai_reasoning_agent(state: AgentState) -> AgentState:
