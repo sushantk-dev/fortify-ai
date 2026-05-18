@@ -24,6 +24,7 @@ from agents.triage import triage_node
 from agents.version_resolver import version_resolver_node
 from agents.context import context_node
 from agents.api_diff import api_diff_node
+from agents.ai_reasoning import ai_reasoning_node, route_from_reasoning
 from state import AgentState
 
 
@@ -84,8 +85,13 @@ def api_diff_agent(state: AgentState) -> AgentState:
 def ai_reasoning_agent(state: AgentState) -> AgentState:
     """
     Iteration 7: ChatVertexAI safety judgment — high/medium/low confidence.
+    Delegates to agents.ai_reasoning.ai_reasoning_node.
     """
-    return _stub("AiReasoning", state)
+    gcp_project = state.get("_gcp_project")   # type: ignore[attr-defined]
+    gcp_location = state.get("_gcp_location")  # type: ignore[attr-defined]
+    if gcp_project is None:
+        return _stub("AiReasoning", state)
+    return ai_reasoning_node(state, gcp_project, gcp_location or "us-central1")
 
 
 def adr_fix_agent(state: AgentState) -> AgentState:
@@ -155,10 +161,15 @@ def route_ai_reasoning(
     state: AgentState,
 ) -> Literal["adr_fix", "ai_code_fix", "escalate"]:
     """
-    Iteration 7 will implement confidence-based routing.
-    Stub: always go to adr_fix.
+    Iteration 7: Route based on AI confidence + safety verdict.
+    Reads the first reasoned group's next_node from state.
+    Falls back to adr_fix if not set (stub behaviour).
     """
-    return "adr_fix"
+    groups: list[dict] = state.get("_reasoned_groups", [])  # type: ignore[attr-defined]
+    if not groups:
+        return "adr_fix"
+    # Use the first group's routing decision
+    return groups[0].get("next_node", "adr_fix")
 
 
 def route_build_result(
