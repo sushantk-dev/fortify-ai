@@ -26,6 +26,8 @@ from agents.context import context_node
 from agents.api_diff import api_diff_node
 from agents.ai_reasoning import ai_reasoning_node, route_from_reasoning
 from agents.adr_fix import adr_fix_node
+from agents.failure_analysis import failure_analysis_node, decide_retry_route
+from agents.ai_code_fix import ai_code_fix_node
 from state import AgentState
 
 
@@ -110,16 +112,27 @@ def adr_fix_agent(state: AgentState) -> AgentState:
 
 def failure_analysis_agent(state: AgentState) -> AgentState:
     """
-    Iteration 9: Parse Maven error log, prepare context for AI code fix.
+    Iteration 9a: Parse Maven error log, prepare context for AI code fix.
+    Delegates to agents.failure_analysis.failure_analysis_node.
     """
-    return _stub("FailureAnalysis", state)
+    project_path = state.get("_project_path")  # type: ignore[attr-defined]
+    max_retries = state.get("_max_retries", 3)  # type: ignore[attr-defined]
+    if project_path is None:
+        return _stub("FailureAnalysis", state)
+    return failure_analysis_node(state, project_path, max_retries)
 
 
 def ai_code_fix_agent(state: AgentState) -> AgentState:
     """
-    Iteration 9: AI-generated patch for broken call sites after upgrade.
+    Iteration 9b: AI-generated patch for broken call sites after upgrade.
+    Delegates to agents.ai_code_fix.ai_code_fix_node.
     """
-    return _stub("AiCodeFix", state)
+    project_path = state.get("_project_path")  # type: ignore[attr-defined]
+    gcp_project = state.get("_gcp_project", "")  # type: ignore[attr-defined]
+    gcp_location = state.get("_gcp_location", "us-central1")  # type: ignore[attr-defined]
+    if project_path is None:
+        return _stub("AiCodeFix", state)
+    return ai_code_fix_node(state, project_path, gcp_project, gcp_location)
 
 
 def pr_agent(state: AgentState) -> AgentState:
@@ -203,9 +216,14 @@ def route_retry(
     state: AgentState,
 ) -> Literal["adr_fix", "version_resolver", "escalate"]:
     """
-    Iteration 9 will implement retry counter + next-candidate logic.
-    Stub: always escalate.
+    Iteration 9: Route after failure_analysis based on retry budget and
+    candidate availability. Reads state["_retry_route"] set by failure_analysis_node.
     """
+    route = state.get("_retry_route", "escalate")  # type: ignore[attr-defined]
+    if route == "retry":
+        return "adr_fix"
+    if route == "next":
+        return "version_resolver"   # advance to next candidate version
     return "escalate"
 
 
