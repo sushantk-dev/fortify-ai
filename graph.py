@@ -28,6 +28,7 @@ from agents.ai_reasoning import ai_reasoning_node, route_from_reasoning
 from agents.adr_fix import adr_fix_node
 from agents.failure_analysis import failure_analysis_node, decide_retry_route
 from agents.ai_code_fix import ai_code_fix_node
+from agents.pr_agent import pr_agent_node
 from state import AgentState
 
 
@@ -138,8 +139,14 @@ def ai_code_fix_agent(state: AgentState) -> AgentState:
 def pr_agent(state: AgentState) -> AgentState:
     """
     Iteration 10: Create GitHub PR with full context, labels, draft flag.
+    Delegates to agents.pr_agent.pr_agent_node.
     """
-    return _stub("PrAgent", state)
+    github_token = state.get("_github_token", "")  # type: ignore[attr-defined]
+    github_repo  = state.get("_github_repo", "")   # type: ignore[attr-defined]
+    reviewers    = state.get("_reviewers", [])      # type: ignore[attr-defined]
+    if not github_token or not github_repo:
+        return _stub("PrAgent", state)
+    return pr_agent_node(state, github_token, github_repo, reviewers)
 
 
 def fortify_writeback_agent(state: AgentState) -> AgentState:
