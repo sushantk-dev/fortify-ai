@@ -323,15 +323,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         logger.warning("[PR] GitHub config not set — skipping PR creation")
 
-    # ── Fortify writeback ─────────────────────────────────────────────────────
+    # ── Escalation reports ────────────────────────────────────────────────────
     logger.info("─" * 60)
-    from agents.fortify_writeback import run_all_writebacks
-    summary = run_all_writebacks(
-        client=client,         # NullFortifyClient suppresses writes in offline mode
-        release_id=release_id,
+    from agents.fortify_writeback import run_all_reports
+    summary = run_all_reports(
         groups=reasoned_groups,
         adr_results=adr_results,
         pr_results=pr_results,
+        output_dir=config.adr_output_dir,
     )
 
     # ── Done ──────────────────────────────────────────────────────────────────
