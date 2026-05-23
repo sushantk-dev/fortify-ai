@@ -5,11 +5,11 @@ Responsibility:
   Invoke adr.py with --commit and --push to apply the version fix, run the
   Maven build, and push the feature branch to origin.
 
-  adr.py invocation:
+  adr_fortify.py invocation:
     python <adr_path> <project_path> \\
         --commit FORTIFY-<vuln_id_prefix> \\
         --push \\
-        --workers 12
+        --target-versions '{"groupId:artifactId": {"safe_version": "..."}}'
 
   Exit 0  → parse branch name, commit hash, PDF path from stdout
   Non-zero → rollback already done by ADR; capture Maven error log for Iteration 9
@@ -158,21 +158,32 @@ def invoke_adr(
     adr_path: str,
     project_path: str,
     commit_id: str,
+    target_versions: dict | None = None,
     timeout: int = 600,
 ) -> tuple[bool, str, str]:
     """
-    Run adr.py --commit <commit_id> --push --workers 12.
+    Run adr_fortify.py --commit <commit_id> --push --target-versions <json>.
+
+    target_versions: {
+        "group_id:artifact_id": {
+            "safe_version": "6.1.20",
+            "severity":     "High",
+            "cve_id":       "CVE-2024-38820"
+        }, ...
+    }
 
     Returns (success: bool, stdout: str, stderr: str).
     success=True means exit code 0 (build passed, branch pushed).
     """
+    import json as _json
     cmd = [
         sys.executable, adr_path,
         project_path,
         "--commit", commit_id,
         "--push",
-        "--workers", "12",
     ]
+    if target_versions:
+        cmd += ["--target-versions", _json.dumps(target_versions)]
 
     logger.debug(f"[ADR Fix] Running: {' '.join(cmd)}")
 
@@ -228,10 +239,23 @@ def run_adr_fix(
 
     commit_id = _build_commit_id(group, jira_prefix)
 
+    # Build the target-versions payload for adr_fortify.py.
+    # Key format: "groupId:artifactId" — matches what pom.xml parse produces.
+    coord_key = f"{parsed['group_id']}:{parsed['artifact_id']}"
+    target_versions = {
+        coord_key: {
+            "safe_version": candidate,
+            "severity":     group.get("severity", "High"),
+            "cve_id":       group.get("cves", [""])[0],
+        }
+    }
+
     logger.info(f"[ADR Fix] Applying {artifact_id} {current_version} → {candidate}")
     logger.info(f"[ADR Fix] Commit ID: {commit_id}")
 
-    success, stdout, stderr = invoke_adr(adr_path, project_path, commit_id)
+    success, stdout, stderr = invoke_adr(
+        adr_path, project_path, commit_id, target_versions=target_versions
+    )
 
     if success:
         parsed_out = _parse_adr_output(stdout, stderr)
