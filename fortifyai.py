@@ -3,8 +3,7 @@ FortifyAI — CLI Entry Point
 ----------------------------
 Usage:
     python fortifyai.py --release <RELEASE_ID>
-
-Iteration 1: loads config, builds graph, prints confirmation, exits.
+    python fortifyai.py --release 0 --report /path/to/report.json   # offline mode
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ from state import AgentState
 
 def configure_logging(verbose: bool = False) -> None:
     """Configure loguru: one line per event, coloured, with timestamps."""
-    logger.remove()  # Remove default handler
+    logger.remove()
     level = "DEBUG" if verbose else "INFO"
     logger.add(
         sys.stderr,
@@ -44,12 +43,9 @@ def configure_logging(verbose: bool = False) -> None:
 def initial_state(release_id: int) -> AgentState:
     """Return a fully-typed initial AgentState for a new pipeline run."""
     return AgentState(
-        # Input
         release_id=release_id,
         vuln_id=None,
         cve_list=[],
-
-        # Fortify finding
         dependency=None,
         severity=None,
         owasp_2021=None,
@@ -58,40 +54,22 @@ def initial_state(release_id: int) -> AgentState:
         is_suppressed=False,
         auditor_status=None,
         closed_status=False,
-
-        # Version resolution
         version_candidates=None,
         current_candidate=None,
         candidate_index=0,
-
-        # Context
         pom_location=None,
         calling_files=[],
         calling_code_snippet=None,
-
-        # API diff
         api_diff=None,
-
-        # AI reasoning
         ai_reasoning=None,
-
-        # ADR fix
         adr_result=None,
-
-        # Retry
         retry_count=0,
         last_build_error=None,
         ai_code_fix_applied=False,
-
-        # PR
         pr_result=None,
-
-        # Pipeline control
         status="running",
         skip_reason=None,
         escalation_reason=None,
-
-        # Audit trail
         audit_trail=[],
     )
 
@@ -102,13 +80,42 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="fortifyai",
         description="FortifyAI — Automated Security Dependency Remediation",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Live mode — fetch from Fortify SSC
+  python fortifyai.py --release 1723380
+
+  # Offline mode — load from a saved JSON report (no Fortify credentials needed)
+  python fortifyai.py --release 0 --report /path/to/report.json
+
+  # Offline mode, release ID from the file itself
+  python fortifyai.py --report /path/to/report.json
+
+  # Verbose debug logging
+  python fortifyai.py --release 1723380 --verbose
+        """,
     )
     parser.add_argument(
         "--release",
         type=int,
-        required=True,
+        default=0,
         metavar="RELEASE_ID",
-        help="Fortify SSC release ID to remediate (e.g. 1723380)",
+        help=(
+            "Fortify SSC release ID to remediate (e.g. 1723380). "
+            "Defaults to 0 when --report is used and the ID is embedded in the file."
+        ),
+    )
+    parser.add_argument(
+        "--report",
+        metavar="JSON_FILE",
+        default=None,
+        help=(
+            "Path to a saved Fortify API JSON report file. "
+            "When supplied, skips all live Fortify API calls — "
+            "useful for testing without SSC credentials. "
+            "Accepts the raw /vulnerabilities endpoint response or a bare list."
+        ),
     )
     parser.add_argument(
         "--verbose",
@@ -123,60 +130,89 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     configure_logging(verbose=args.verbose)
 
+    offline_mode = args.report is not None
+
     logger.info("=" * 60)
     logger.info("FortifyAI starting up")
-    logger.info(f"  Release ID : {args.release}")
+    logger.info(f"  Mode       : {'OFFLINE (--report)' if offline_mode else 'LIVE'}")
+    if offline_mode:
+        logger.info(f"  Report     : {args.report}")
+    else:
+        logger.info(f"  Release ID : {args.release}")
     logger.info("=" * 60)
 
-    # 1. Load and validate configuration
+    # ── Config ────────────────────────────────────────────────────────────────
+    # In offline mode, config is still loaded for project_path, adr_path, etc.
+    # but FORTIFY_BASE_URL and FORTIFY_API_TOKEN are not required.
     try:
         config: FortifyAIConfig = load_config()
         logger.info("[Config] ✅ Configuration loaded successfully")
-        logger.debug(f"[Config] Fortify base URL : {config.fortify_base_url}")
-        logger.debug(f"[Config] GitHub repo      : {config.github_repo}")
-        logger.debug(f"[Config] GCP project      : {config.gcp_project}")
-        logger.debug(f"[Config] ADR path         : {config.adr_path}")
-        logger.debug(f"[Config] Max retries      : {config.max_retries}")
     except Exception as exc:
-        logger.error(f"[Config] ❌ Failed to load configuration: {exc}")
-        logger.error(
-            "Create a .env file from .env.example and fill in all required values."
-        )
-        return 1
+        if offline_mode:
+            logger.warning(
+                f"[Config] Some required vars missing ({exc}). "
+                "Continuing in offline mode — Fortify credentials not needed."
+            )
+            config = None  # type: ignore[assignment]
+        else:
+            logger.error(f"[Config] ❌ Failed to load configuration: {exc}")
+            return 1
 
-    # 2. Build and compile the LangGraph pipeline
+    # ── Graph ─────────────────────────────────────────────────────────────────
     try:
-        graph = get_compiled_graph()
-        logger.info("[Graph] ✅ Pipeline graph registered and compiled")
+        get_compiled_graph()
+        logger.info("[Graph] ✅ Pipeline graph compiled")
     except Exception as exc:
         logger.error(f"[Graph] ❌ Failed to compile graph: {exc}")
         return 1
 
-    # 3. Construct initial state
-    state = initial_state(args.release)
-    logger.info(f"[State] ✅ Initial state constructed for release {args.release}")
+    # ── Resolve vulnerabilities ───────────────────────────────────────────────
+    release_id = args.release
 
-    # ── Iterations 2–4: Fetch → Triage → Resolve versions ───────────────────
-    try:
-        client = FortifyClient.from_config(config)
-        logger.info("[Client] ✅ FortifyClient initialised")
-    except Exception as exc:
-        logger.error(f"[Client] ❌ Failed to build FortifyClient: {exc}")
-        return 1
+    if offline_mode:
+        # ── Offline path: load from JSON file ─────────────────────────────────
+        from offline_loader import load_report, NullFortifyClient
+        try:
+            raw_vulns, file_release_id = load_report(args.report)
+        except FileNotFoundError as exc:
+            logger.error(f"[Offline] ❌ {exc}")
+            return 1
+        except Exception as exc:
+            logger.error(f"[Offline] ❌ Failed to load report: {exc}")
+            return 1
 
+        # Prefer release_id from the file, fall back to --release arg
+        if file_release_id is not None:
+            release_id = file_release_id
+            logger.info(f"[Offline] Using release_id={release_id} from file")
+        elif release_id == 0:
+            logger.warning(
+                "[Offline] No release_id in file and --release not set. "
+                "Defaulting to 0 — writeback calls will be suppressed anyway."
+            )
+
+        client = NullFortifyClient(raw_vulns)
+        logger.info(f"[Offline] ✅ NullFortifyClient ready ({len(raw_vulns)} vulns)")
+
+    else:
+        # ── Live path: call the real Fortify API ──────────────────────────────
+        try:
+            client = FortifyClient.from_config(config)
+            logger.info("[Client] ✅ FortifyClient initialised")
+        except Exception as exc:
+            logger.error(f"[Client] ❌ Failed to build FortifyClient: {exc}")
+            return 1
+
+        try:
+            raw_vulns = client.get_vulnerabilities(release_id)
+            logger.info(f"Fetched {len(raw_vulns)} vulnerabilities")
+        except Exception as exc:
+            logger.error(f"[Client] ❌ API call failed: {exc}")
+            logger.error("Check FORTIFY_BASE_URL and FORTIFY_API_TOKEN in your .env")
+            return 1
+
+    # ── Triage ────────────────────────────────────────────────────────────────
     logger.info("─" * 60)
-
-    try:
-        raw_vulns = client.get_vulnerabilities(args.release)
-        logger.info(f"Fetched {len(raw_vulns)} vulnerabilities")
-    except Exception as exc:
-        logger.error(f"[Client] ❌ API call failed: {exc}")
-        logger.error(
-            "Check FORTIFY_BASE_URL and FORTIFY_API_TOKEN in your .env file."
-        )
-        return 1
-
-    # Triage
     from agents.triage import group_by_dependency
     groups = group_by_dependency(raw_vulns)
 
@@ -184,54 +220,108 @@ def main(argv: list[str] | None = None) -> int:
         logger.warning("[Triage] No actionable findings — nothing to remediate")
         return 0
 
+    # ── Version resolution ────────────────────────────────────────────────────
     logger.info("─" * 60)
-
-    # Version resolution
     from agents.version_resolver import resolve_all_groups
-    resolved_groups = resolve_all_groups(client, args.release, groups)
+    resolved_groups = resolve_all_groups(client, release_id, groups)
 
+    # ── Context ───────────────────────────────────────────────────────────────
     logger.info("─" * 60)
-
-    # Context resolution
     from agents.context import locate_all_groups
     from pathlib import Path
-    context_groups = locate_all_groups(Path(config.project_path), resolved_groups)
+    project_path = Path(config.project_path) if config else Path(".")
+    context_groups = locate_all_groups(project_path, resolved_groups)
 
+    # ── API diff ──────────────────────────────────────────────────────────────
     logger.info("─" * 60)
-
-    # API diff
     from agents.api_diff import run_api_diff_all_groups
-    diff_groups = run_api_diff_all_groups(
-        context_groups, Path(config.project_path), config.japicmp_jar_path
-    )
+    japicmp_path = config.japicmp_jar_path if config else "/nonexistent/japicmp.jar"
+    diff_groups = run_api_diff_all_groups(context_groups, project_path, japicmp_path)
 
+    # ── AI reasoning ──────────────────────────────────────────────────────────
     logger.info("─" * 60)
-
-    # AI reasoning
     from agents.ai_reasoning import reason_all_groups
-    reasoned_groups = reason_all_groups(diff_groups, config.gcp_project, config.gcp_location)
+    gcp_project  = config.gcp_project  if config else ""
+    gcp_location = config.gcp_location if config else "us-central1"
+    reasoned_groups = reason_all_groups(diff_groups, gcp_project, gcp_location)
 
+    # ── ADR fix ───────────────────────────────────────────────────────────────
     logger.info("─" * 60)
-
-    # ADR fix — run for each actionable group
     from agents.adr_fix import run_adr_fix
+    adr_results: list[dict] = []
     for group in reasoned_groups:
         if group.get("next_node") == "escalate":
             logger.warning(
-                f"[ADR Fix] Skipping {group['parsed']['artifact_id']} — escalated by AI reasoning"
+                f"[ADR Fix] Skipping {group['parsed']['artifact_id']} — escalated"
             )
+            adr_results.append({
+                "artifact_id": group["parsed"]["artifact_id"],
+                "result": {
+                    "success": False, "branch_name": None, "commit_hash": None,
+                    "build_time_seconds": None, "pdf_path": None,
+                    "error_reason": group.get("escalation_reason", "Escalated by AI reasoning"),
+                },
+            })
             continue
-        run_adr_fix(
-            group,
-            adr_path=config.adr_path,
-            project_path=config.project_path,
-            jira_prefix=config.jira_id_prefix,
+
+        if config:
+            result = run_adr_fix(
+                group,
+                adr_path=config.adr_path,
+                project_path=str(project_path),
+                jira_prefix=config.jira_id_prefix,
+            )
+        else:
+            from state import AdrResult
+            logger.warning("[ADR Fix] No config — skipping ADR invocation (offline dry-run)")
+            result = AdrResult(
+                success=False, branch_name=None, commit_hash=None,
+                build_time_seconds=None, pdf_path=None,
+                error_reason="No config in offline mode",
+            )
+
+        adr_results.append({
+            "artifact_id": group["parsed"]["artifact_id"],
+            "result": result,
+        })
+
+    # ── PR creation ───────────────────────────────────────────────────────────
+    logger.info("─" * 60)
+    from agents.pr_agent import create_prs_for_all_groups
+    pr_results = []
+    if config and config.github_token and config.github_repo:
+        pr_results = create_prs_for_all_groups(
+            groups=reasoned_groups,
+            adr_results=adr_results,
+            release_id=release_id,
+            github_token=config.github_token,
+            github_repo=config.github_repo,
+            reviewers=config.reviewers,
         )
+    else:
+        logger.warning("[PR] GitHub config not set — skipping PR creation")
 
+    # ── Fortify writeback ─────────────────────────────────────────────────────
     logger.info("─" * 60)
-    logger.info("Iteration 11 ✅  Pipeline complete — all iterations implemented")
-    logger.info("─" * 60)
+    from agents.fortify_writeback import run_all_writebacks
+    summary = run_all_writebacks(
+        client=client,         # NullFortifyClient suppresses writes in offline mode
+        release_id=release_id,
+        groups=reasoned_groups,
+        adr_results=adr_results,
+        pr_results=pr_results,
+    )
 
+    # ── Done ──────────────────────────────────────────────────────────────────
+    logger.info("─" * 60)
+    mode_tag = "OFFLINE" if offline_mode else "LIVE"
+    logger.info(
+        f"[Done] ✅ FortifyAI complete [{mode_tag}] — "
+        f"fixed={summary['total_fixed']}, "
+        f"escalated={summary['total_escalated']}, "
+        f"failed={summary['total_failed']}"
+    )
+    logger.info("─" * 60)
     return 0
 
 
