@@ -2656,7 +2656,7 @@ def main():
         try:
             _target_map = json.loads(args.target_versions)
             _tv_summary = ", ".join(
-                f"{k}\u2192{v.get('safe_version', '?')}" for k, v in _target_map.items()
+                f"{k} -> {v.get('safe_version', '?')}" for k, v in _target_map.items()
             )
             print(f"  {C.CYAN}[Fortify]{C.RESET}  Target versions loaded: {_tv_summary}")
         except (json.JSONDecodeError, KeyError) as exc:
