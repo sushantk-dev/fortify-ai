@@ -158,6 +158,15 @@ VERSION_XML_RE    = re.compile(r"<version>([^<]+)</version>")
 #   system   : resolved from local filesystem, not Maven Central
 EXCLUDED_SCOPES = {"test", "provided", "system"}
 
+# ── Version comparison utility ────────────────────────────────────────────────
+# Used by apply_transitive_fixes and the report to compare version strings.
+# Kept as a standalone utility after Phase 3 (min-safe-version lookup) was
+# removed — the function itself has no external dependencies.
+@lru_cache(maxsize=16384)
+def _version_tuple(v: str):
+    """Converts a version string to a comparable tuple of ints, e.g. '2.17.3' -> (2,17,3)."""
+    return tuple(int(x) for x in re.findall(r"\d+", v))
+
 # ── Vendor Bundle Expansion ───────────────────────────────────────────────────
 # Some libraries ship "vendor" JARs that re-bundle a third-party dependency at
 # a fixed version.  CVEs are published against the underlying library, not the
