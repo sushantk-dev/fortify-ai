@@ -1972,7 +1972,14 @@ def _prepare_git_branch(repo_root: str, jira_id: str, base_branch_override: str 
     today  = datetime.now().strftime("%Y%m%d")
     branch = f"feature/{jira_id}_fortify_fix_{today}"
 
-    _run_git(["git", "fetch", "origin"], repo_root, "fetch origin")
+    # fetch is best-effort — temp clones created by the pipeline may have no remote
+    try:
+        subprocess.run(
+            ["git", "fetch", "origin"],
+            cwd=repo_root, capture_output=True, text=True, timeout=30,
+        )
+    except Exception:
+        pass
 
     # Use caller-supplied branch if provided, otherwise auto-detect
     if base_branch_override:
@@ -1997,8 +2004,22 @@ def _prepare_git_branch(repo_root: str, jira_id: str, base_branch_override: str 
         if not base_branch:
             base_branch = "main"
 
-    _run_git(["git", "checkout", base_branch], repo_root, f"checkout {base_branch}")
-    _run_git(["git", "pull", "origin", base_branch], repo_root, f"pull {base_branch}")
+    # checkout base branch — non-fatal if we're already on a detached HEAD or similar
+    co = subprocess.run(
+        ["git", "checkout", base_branch],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+    if co.returncode != 0:
+        print(f"{C.YELLOW}[GIT] Could not checkout {base_branch} ({co.stderr.strip()}) — using current HEAD{C.RESET}")
+
+    # pull — non-fatal (temp clone may have no remote)
+    try:
+        subprocess.run(
+            ["git", "pull", "origin", base_branch],
+            cwd=repo_root, capture_output=True, text=True, timeout=30,
+        )
+    except Exception:
+        pass
 
     create = subprocess.run(
         ["git", "checkout", "-b", branch],

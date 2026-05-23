@@ -133,8 +133,8 @@ def _parse_adr_output(stdout: str, stderr: str) -> dict:
 
 def _extract_maven_error(stdout: str, stderr: str) -> str:
     """
-    Extract the relevant Maven build error block from ADR output.
-    Looks for lines after [ERROR] or BUILD FAILURE.
+    Extract the relevant error block from ADR output.
+    Catches Maven build failures, Python tracebacks, and git errors.
     Capped at 4000 chars for state size.
     """
     combined = stdout + "\n" + stderr
@@ -142,14 +142,19 @@ def _extract_maven_error(stdout: str, stderr: str) -> str:
     capture = False
 
     for line in combined.splitlines():
-        if "BUILD FAILURE" in line or "[ERROR]" in line:
+        if any(trigger in line for trigger in (
+            "BUILD FAILURE", "[ERROR]", "Traceback (most recent", "GIT ERROR", "sys.exit"
+        )):
             capture = True
         if capture:
             error_lines.append(line)
         if len("\n".join(error_lines)) > 4000:
             break
 
-    return "\n".join(error_lines) if error_lines else combined[-3000:]
+    if error_lines:
+        return "\n".join(error_lines)
+    # fallback: return everything we have
+    return combined.strip()[-3000:] if combined.strip() else "(no output captured — check adr_fortify.py directly)"
 
 
 # ── ADR invocation ────────────────────────────────────────────────────────────
@@ -198,6 +203,12 @@ def invoke_adr(
         )
         elapsed = int(time.time() - t0)
         logger.debug(f"[ADR Fix] ADR exited {result.returncode} in {elapsed}s")
+        if result.returncode != 0:
+            # Log full captured output immediately so it's visible even if error parsing misses it
+            if result.stderr.strip():
+                logger.debug(f"[ADR Fix] stderr:\n{result.stderr[-2000:]}")
+            if result.stdout.strip():
+                logger.debug(f"[ADR Fix] stdout (last 1000):\n{result.stdout[-1000:]}")
         return result.returncode == 0, result.stdout, result.stderr
 
     except subprocess.TimeoutExpired as exc:
