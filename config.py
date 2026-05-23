@@ -12,41 +12,41 @@ from pydantic import Field
 class FortifyAIConfig(BaseSettings):
     # ── Fortify SSC ──────────────────────────────────────────────────────────
     fortify_base_url: str = Field(
-        ...,
+        default="",
         description="Fortify SSC base URL, e.g. https://your-instance.fortify.com",
     )
     fortify_api_token: str = Field(
-        ...,
+        default="",
         description="Fortify SSC API token (Bearer token)",
     )
 
     # ── GitHub ───────────────────────────────────────────────────────────────
     github_token: str = Field(
-        ...,
+        default="",
         description="GitHub personal access token with repo + PR permissions",
     )
     github_repo: str = Field(
-        ...,
+        default="",
         description="Target GitHub repo in owner/repo format, e.g. acme/backend",
     )
 
     # ── Project / ADR ────────────────────────────────────────────────────────
     project_path: str = Field(
-        ...,
+        default=".",
         description="Absolute path to the Maven project root on disk",
     )
     adr_path: str = Field(
-        ...,
+        default="",
         description="Absolute path to adr.py (Automated Dependency Remediation script)",
     )
     japicmp_jar_path: str = Field(
-        ...,
+        default="",
         description="Absolute path to japicmp fat-jar for API diff analysis",
     )
 
     # ── GCP / Vertex AI ──────────────────────────────────────────────────────
     gcp_project: str = Field(
-        ...,
+        default="",
         description="GCP project ID for Vertex AI, e.g. my-gcp-project-123",
     )
     gcp_location: str = Field(
@@ -65,9 +65,12 @@ class FortifyAIConfig(BaseSettings):
         default="FORTIFY",
         description="Prefix used when generating commit/branch JIRA identifiers",
     )
-    reviewers: list[str] = Field(
-        default=[],
-        description="GitHub usernames to auto-assign on high-confidence PRs",
+    reviewers: str = Field(
+        default="",
+        description=(
+            "Comma-separated GitHub usernames to auto-assign on high-confidence PRs. "
+            "e.g. alice,bob,charlie"
+        ),
     )
 
     # ── Optional ADR output path ─────────────────────────────────────────────
@@ -79,8 +82,13 @@ class FortifyAIConfig(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
-        # Allow reading from environment even if .env is absent
         case_sensitive = False
+
+    def get_reviewers(self) -> list[str]:
+        """Parse the comma-separated reviewers string into a list."""
+        if not self.reviewers.strip():
+            return []
+        return [r.strip() for r in self.reviewers.split(",") if r.strip()]
 
 
 def load_config() -> FortifyAIConfig:

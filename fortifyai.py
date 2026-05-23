@@ -142,21 +142,43 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("=" * 60)
 
     # ── Config ────────────────────────────────────────────────────────────────
-    # In offline mode, config is still loaded for project_path, adr_path, etc.
-    # but FORTIFY_BASE_URL and FORTIFY_API_TOKEN are not required.
     try:
         config: FortifyAIConfig = load_config()
         logger.info("[Config] ✅ Configuration loaded successfully")
     except Exception as exc:
-        if offline_mode:
-            logger.warning(
-                f"[Config] Some required vars missing ({exc}). "
-                "Continuing in offline mode — Fortify credentials not needed."
-            )
-            config = None  # type: ignore[assignment]
-        else:
-            logger.error(f"[Config] ❌ Failed to load configuration: {exc}")
-            return 1
+        logger.error(f"[Config] ❌ Failed to load configuration: {exc}")
+        return 1
+
+    # ── Validate required fields based on mode ────────────────────────────────
+    errors = []
+
+    # Fortify credentials — required in live mode only
+    if not offline_mode:
+        if not config.fortify_base_url:
+            errors.append("FORTIFY_BASE_URL is required in live mode")
+        if not config.fortify_api_token:
+            errors.append("FORTIFY_API_TOKEN is required in live mode")
+
+    # These are required in BOTH modes
+    if not config.project_path or config.project_path == ".":
+        errors.append("PROJECT_PATH is required")
+    elif not __import__('pathlib').Path(config.project_path).exists():
+        errors.append(f"PROJECT_PATH does not exist: {config.project_path}")
+    if not config.adr_path:
+        errors.append("ADR_PATH is required")
+    if not config.japicmp_jar_path:
+        errors.append("JAPICMP_JAR_PATH is required")
+    if not config.github_token:
+        errors.append("GITHUB_TOKEN is required")
+    if not config.github_repo:
+        errors.append("GITHUB_REPO is required")
+    if not config.gcp_project:
+        errors.append("GCP_PROJECT is required")
+
+    if errors:
+        for err in errors:
+            logger.error(f"[Config] ❌ {err}")
+        return 1
 
     # ── Graph ─────────────────────────────────────────────────────────────────
     try:
@@ -229,20 +251,20 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("─" * 60)
     from agents.context import locate_all_groups
     from pathlib import Path
-    project_path = Path(config.project_path) if config else Path(".")
+    project_path = Path(config.project_path) if config.project_path else Path(".")
     context_groups = locate_all_groups(project_path, resolved_groups)
 
     # ── API diff ──────────────────────────────────────────────────────────────
     logger.info("─" * 60)
     from agents.api_diff import run_api_diff_all_groups
-    japicmp_path = config.japicmp_jar_path if config else "/nonexistent/japicmp.jar"
+    japicmp_path = config.japicmp_jar_path or "/nonexistent/japicmp.jar"
     diff_groups = run_api_diff_all_groups(context_groups, project_path, japicmp_path)
 
     # ── AI reasoning ──────────────────────────────────────────────────────────
     logger.info("─" * 60)
     from agents.ai_reasoning import reason_all_groups
-    gcp_project  = config.gcp_project  if config else ""
-    gcp_location = config.gcp_location if config else "us-central1"
+    gcp_project  = config.gcp_project
+    gcp_location = config.gcp_location
     reasoned_groups = reason_all_groups(diff_groups, gcp_project, gcp_location)
 
     # ── ADR fix ───────────────────────────────────────────────────────────────
@@ -264,7 +286,7 @@ def main(argv: list[str] | None = None) -> int:
             })
             continue
 
-        if config:
+        if config.adr_path:
             result = run_adr_fix(
                 group,
                 adr_path=config.adr_path,
@@ -273,11 +295,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             from state import AdrResult
-            logger.warning("[ADR Fix] No config — skipping ADR invocation (offline dry-run)")
+            logger.warning("[ADR Fix] ADR_PATH not set — skipping ADR invocation")
             result = AdrResult(
                 success=False, branch_name=None, commit_hash=None,
                 build_time_seconds=None, pdf_path=None,
-                error_reason="No config in offline mode",
+                error_reason="ADR_PATH not configured",
             )
 
         adr_results.append({
@@ -289,14 +311,14 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("─" * 60)
     from agents.pr_agent import create_prs_for_all_groups
     pr_results = []
-    if config and config.github_token and config.github_repo:
+    if config.github_token and config.github_repo:
         pr_results = create_prs_for_all_groups(
             groups=reasoned_groups,
             adr_results=adr_results,
             release_id=release_id,
             github_token=config.github_token,
             github_repo=config.github_repo,
-            reviewers=config.reviewers,
+            reviewers=config.get_reviewers(),
         )
     else:
         logger.warning("[PR] GitHub config not set — skipping PR creation")
