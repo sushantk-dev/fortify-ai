@@ -167,6 +167,14 @@ def _version_tuple(v: str):
     """Converts a version string to a comparable tuple of ints, e.g. '2.17.3' -> (2,17,3)."""
     return tuple(int(x) for x in re.findall(r"\d+", v))
 
+
+def get_vuln_severity(v: dict) -> str:
+    """Return severity string for a vuln dict.
+    In the Fortify pipeline, severity is set directly on the vuln dict by the
+    findings builder. Falls back to 'HIGH' if not present.
+    """
+    return (v.get("severity") or "HIGH").upper()
+
 # ── Vendor Bundle Expansion ───────────────────────────────────────────────────
 # Some libraries ship "vendor" JARs that re-bundle a third-party dependency at
 # a fixed version.  CVEs are published against the underlying library, not the
