@@ -83,14 +83,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Live mode — fetch from Fortify SSC
+  # Live mode
   python fortifyai.py --release 1723380
 
-  # Offline mode — load from a saved JSON report (no Fortify credentials needed)
-  python fortifyai.py --release 0 --report /path/to/report.json
+  # Override repo at runtime (no need to edit .env)
+  python fortifyai.py --release 1723380 --repo acme/backend
 
-  # Offline mode, release ID from the file itself
-  python fortifyai.py --report /path/to/report.json
+  # Offline mode with repo override
+  python fortifyai.py --report /path/to/report.json --repo acme/backend
 
   # Verbose debug logging
   python fortifyai.py --release 1723380 --verbose
@@ -118,6 +118,15 @@ Examples:
         ),
     )
     parser.add_argument(
+        "--repo",
+        metavar="OWNER/REPO",
+        default=None,
+        help=(
+            "GitHub repository in owner/repo format (e.g. acme/backend). "
+            "Overrides GITHUB_REPO from .env when provided."
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -139,6 +148,8 @@ def main(argv: list[str] | None = None) -> int:
         logger.info(f"  Report     : {args.report}")
     else:
         logger.info(f"  Release ID : {args.release}")
+    if args.repo:
+        logger.info(f"  Repo (CLI) : {args.repo}")
     logger.info("=" * 60)
 
     # ── Config ────────────────────────────────────────────────────────────────
@@ -148,6 +159,11 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         logger.error(f"[Config] ❌ Failed to load configuration: {exc}")
         return 1
+
+    # ── CLI overrides (take priority over .env) ───────────────────────────────
+    if args.repo:
+        object.__setattr__(config, "github_repo", args.repo)
+        logger.info(f"[Config] github_repo overridden by --repo: {args.repo}")
 
     # ── Validate required fields based on mode ────────────────────────────────
     errors = []
