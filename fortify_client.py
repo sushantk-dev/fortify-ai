@@ -90,7 +90,7 @@ class FortifyClient:
         """Create a requests.Session with retry logic and auth header."""
         session = requests.Session()
         session.headers.update({
-            "Authorization": f"FortifyToken {api_token}",
+            "Authorization": f"Bearer {api_token}",
             "Accept": "application/json",
             "Content-Type": "application/json",
         })
