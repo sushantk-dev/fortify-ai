@@ -2745,6 +2745,7 @@ def main():
         git_branch, git_base = _prepare_git_branch(git_root, args.jira_id, args.base_branch)
 
     # ── Transitive dep pool: ONE mvn dependency:tree run on root pom ─────────
+    mvn_exe       = args.mvn or _find_mvn()   # resolved once; used for transitive + effective-pom + build
     transitive_pool = {}   # (gid, aid, ver) -> dep_dict
     if mvn_exe:
         print()
@@ -2769,7 +2770,6 @@ def main():
                       f"  [{elapsed_pool:.1f}s]{C.RESET}")
 
     # ── Accumulate across all modules ────────────────────────────────────────
-    mvn_exe       = args.mvn or _find_mvn()   # resolved once; used for effective-pom + build
     all_findings  = []   # each finding gets a "module" key
     all_applied   = []   # (pom_path, msg)
     all_skipped   = []   # (pom_path, msg)
