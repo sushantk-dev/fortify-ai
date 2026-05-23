@@ -252,8 +252,8 @@ def build_graph() -> StateGraph:
     graph.add_node("triage", triage)
     graph.add_node("version_resolver", version_resolver)
     graph.add_node("context", context_agent)
-    graph.add_node("api_diff", api_diff_agent)
-    graph.add_node("ai_reasoning", ai_reasoning_agent)
+    graph.add_node("api_diff_agent", api_diff_agent)
+    graph.add_node("ai_reasoning_agent", ai_reasoning_agent)
     graph.add_node("adr_fix", adr_fix_agent)
     graph.add_node("failure_analysis", failure_analysis_agent)
     graph.add_node("ai_code_fix", ai_code_fix_agent)
@@ -279,12 +279,12 @@ def build_graph() -> StateGraph:
 
     # Happy path (no conditionals yet)
     graph.add_edge("version_resolver", "context")
-    graph.add_edge("context", "api_diff")
-    graph.add_edge("api_diff", "ai_reasoning")
+    graph.add_edge("context", "api_diff_agent")
+    graph.add_edge("api_diff_agent", "ai_reasoning_agent")
 
     # AI reasoning → branch on confidence
     graph.add_conditional_edges(
-        "ai_reasoning",
+        "ai_reasoning_agent",
         route_ai_reasoning,
         {
             "adr_fix": "adr_fix",
