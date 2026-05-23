@@ -175,11 +175,14 @@ def main(argv: list[str] | None = None) -> int:
         if not config.fortify_api_token:
             errors.append("FORTIFY_API_TOKEN is required in live mode")
 
-    # These are required in BOTH modes
-    if not config.project_path or config.project_path == ".":
-        errors.append("PROJECT_PATH is required")
-    elif not __import__('pathlib').Path(config.project_path).exists():
-        errors.append(f"PROJECT_PATH does not exist: {config.project_path}")
+    # project_path: NOT required when --repo is given (will be cloned below)
+    repo_will_clone = bool(args.repo)
+    if not repo_will_clone:
+        if not config.project_path or config.project_path == ".":
+            errors.append("PROJECT_PATH is required (or pass --repo org/name to clone automatically)")
+        elif not __import__('pathlib').Path(config.project_path).exists():
+            errors.append(f"PROJECT_PATH does not exist: {config.project_path}")
+
     if not config.adr_path:
         errors.append("ADR_PATH is required")
     if not config.japicmp_jar_path:
@@ -203,6 +206,39 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         logger.error(f"[Graph] ❌ Failed to compile graph: {exc}")
         return 1
+
+    # ── Clone repo if --repo was passed ───────────────────────────────────────
+    import tempfile
+    import shutil
+    from pathlib import Path
+
+    clone_dir = None   # track temp dir for cleanup
+
+    if repo_will_clone:
+        repo_url = f"https://{config.github_token}@github.com/{config.github_repo}.git"
+        clone_dir = tempfile.mkdtemp(prefix="fortifyai_clone_")
+        logger.info(f"[Clone] Cloning {config.github_repo} → {clone_dir}")
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["git", "clone", "--depth", "1", repo_url, clone_dir],
+                capture_output=True, text=True, timeout=300,
+            )
+            if result.returncode != 0:
+                logger.error(f"[Clone] ❌ git clone failed:\n{result.stderr[:500]}")
+                shutil.rmtree(clone_dir, ignore_errors=True)
+                return 1
+            logger.info(f"[Clone] ✅ Repository cloned successfully")
+            # Override project_path with the cloned directory
+            object.__setattr__(config, "project_path", clone_dir)
+        except subprocess.TimeoutExpired:
+            logger.error("[Clone] ❌ git clone timed out after 300s")
+            shutil.rmtree(clone_dir, ignore_errors=True)
+            return 1
+        except FileNotFoundError:
+            logger.error("[Clone] ❌ git not found on PATH")
+            shutil.rmtree(clone_dir, ignore_errors=True)
+            return 1
 
     # ── Resolve vulnerabilities ───────────────────────────────────────────────
     release_id = args.release
@@ -359,6 +395,12 @@ def main(argv: list[str] | None = None) -> int:
         f"failed={summary['total_failed']}"
     )
     logger.info("─" * 60)
+
+    # ── Cleanup cloned repo ───────────────────────────────────────────────────
+    if clone_dir:
+        shutil.rmtree(clone_dir, ignore_errors=True)
+        logger.info(f"[Clone] Temp clone removed: {clone_dir}")
+
     return 0
 
 
