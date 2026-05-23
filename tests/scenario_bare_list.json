@@ -1,0 +1,28 @@
+[
+  {
+    "id": 1,
+    "releaseId": 9999,
+    "severityString": "High",
+    "category": "Open Source",
+    "primaryLocation": "com.fasterxml.jackson.core:jackson-databind@2.9.8",
+    "vulnId": "jackson-vuln-0001",
+    "checkId": "CVE-2020-25649",
+    "auditorStatus": "Fixable OSS",
+    "isSuppressed": false,
+    "closedStatus": false,
+    "owasp2021": "A06:2021 – Vulnerable and Outdated Components"
+  },
+  {
+    "id": 2,
+    "releaseId": 9999,
+    "severityString": "Critical",
+    "category": "Open Source",
+    "primaryLocation": "com.fasterxml.jackson.core:jackson-databind@2.9.8",
+    "vulnId": "jackson-vuln-0002",
+    "checkId": "CVE-2019-14379",
+    "auditorStatus": "Fixable OSS",
+    "isSuppressed": false,
+    "closedStatus": false,
+    "owasp2021": "A06:2021 – Vulnerable and Outdated Components"
+  }
+]
