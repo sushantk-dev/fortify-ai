@@ -192,28 +192,34 @@ def invoke_adr(
 
     logger.debug(f"[ADR Fix] Running: {' '.join(cmd)}")
 
+    proc = None
     try:
         t0 = time.time()
-        result = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,   # merge stderr into stdout so we see everything
             cwd=project_path,
         )
-        elapsed = int(time.time() - t0)
-        logger.debug(f"[ADR Fix] ADR exited {result.returncode} in {elapsed}s")
-        if result.returncode != 0:
-            # Log full captured output immediately so it's visible even if error parsing misses it
-            if result.stderr.strip():
-                logger.debug(f"[ADR Fix] stderr:\n{result.stderr[-2000:]}")
-            if result.stdout.strip():
-                logger.debug(f"[ADR Fix] stdout (last 1000):\n{result.stdout[-1000:]}")
-        return result.returncode == 0, result.stdout, result.stderr
 
-    except subprocess.TimeoutExpired as exc:
+        stdout_lines: list[str] = []
+        for raw in iter(proc.stdout.readline, b""):
+            line = raw.decode("utf-8", errors="replace").rstrip()
+            stdout_lines.append(line)
+            logger.debug(f"[ADR] {line}")   # streams live to the terminal
+
+        proc.wait(timeout=timeout)
+        elapsed = int(time.time() - t0)
+        stdout_text = "\n".join(stdout_lines)
+
+        logger.debug(f"[ADR Fix] ADR exited {proc.returncode} in {elapsed}s")
+        if proc.returncode != 0:
+            logger.debug(f"[ADR Fix] stdout (last 1000):\n{stdout_text[-1000:]}")
+        return proc.returncode == 0, stdout_text, ""
+
+    except subprocess.TimeoutExpired:
+        if proc:
+            proc.kill()
         logger.error(f"[ADR Fix] ADR timed out after {timeout}s")
         return False, "", f"ADR timed out after {timeout}s"
     except FileNotFoundError:
