@@ -13,11 +13,31 @@ class FortifyAIConfig(BaseSettings):
     # ── Fortify SSC ──────────────────────────────────────────────────────────
     fortify_base_url: str = Field(
         default="",
-        description="Fortify SSC base URL, e.g. https://your-instance.fortify.com",
+        description="Fortify SSC base URL, e.g. https://api.ams.fortify.com",
     )
     fortify_api_token: str = Field(
         default="",
-        description="Fortify SSC API token (Bearer token)",
+        description=(
+            "Fortify Bearer token. Leave empty to have the API server fetch it "
+            "automatically via OAuth using fortify_username + fortify_password."
+        ),
+    )
+
+    # ── Fortify OAuth credentials (used to obtain / refresh the Bearer token) ─
+    fortify_username: str = Field(
+        default="",
+        description=(
+            "Fortify login username, e.g. 'equifax\\\\sushant.kumar'. "
+            "Used with POST /oauth/token (grant_type=password)."
+        ),
+    )
+    fortify_password: str = Field(
+        default="",
+        description="Fortify login password. Used with POST /oauth/token.",
+    )
+    fortify_scope: str = Field(
+        default="api-tenant",
+        description="OAuth scope sent to /oauth/token (default: api-tenant).",
     )
 
     # ── GitHub ───────────────────────────────────────────────────────────────

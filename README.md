@@ -58,6 +58,10 @@ GET /config/validate //validate .env
 
 GET /health //liveness probe
 
+
+
+POST /auth/token
+
 &#x20;
 
 /pipeline/app-name

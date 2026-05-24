@@ -119,6 +119,20 @@ class DryRunRequest(BaseModel):
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
+# ── Auth ─────────────────────────────────────────────────────────────────────
+
+class AuthTokenRequest(BaseModel):
+    """
+    Override credentials per-request. Leave all fields empty to use values from .env.
+    Useful for testing a different account without editing config.
+    """
+    username: Optional[str] = Field(default=None, description="Fortify login username (overrides FORTIFY_USERNAME)")
+    password: Optional[str] = Field(default=None, description="Fortify login password (overrides FORTIFY_PASSWORD)")
+    scope: Optional[str]    = Field(default=None, description="OAuth scope (default: api-tenant)")
+    write_to_env: bool       = Field(default=True, description="Persist the new token to FORTIFY_API_TOKEN in .env")
+    env_path: str            = Field(default=".env", description="Path to the .env file to update")
+
+
 # ── Individual stages ─────────────────────────────────────────────────────────
 
 class TriageRequest(BaseModel):
@@ -396,6 +410,50 @@ def config_validate():
     }
     missing = [k for k, v in checks.items() if not v]
     return ok({"fields": checks, "missing": missing, "ready": len(missing) == 0})
+
+
+@app.post("/auth/token", tags=["Utility"])
+def auth_token(req: AuthTokenRequest = AuthTokenRequest()):
+    """
+    Fetch a fresh Fortify Bearer token via OAuth2 password grant and
+    optionally write it back to `FORTIFY_API_TOKEN` in `.env`.
+
+    Credentials are read from `.env` (`FORTIFY_USERNAME`, `FORTIFY_PASSWORD`,
+    `FORTIFY_SCOPE`) unless overridden in the request body.
+
+    Flow:
+      POST {FORTIFY_BASE_URL}/oauth/token
+        grant_type=password  scope=api-tenant
+        username=<from env>  password=<from env>
+        security_code=       do_totp=false
+      → access_token written to FORTIFY_API_TOKEN in .env (if write_to_env=true)
+
+    Returns:
+      access_token, token_type, expires_in, scope
+    """
+    import time as _time
+    t0 = _time.time()
+    try:
+        from fortify_auth import fetch_token, write_token_to_env
+        cfg = load_config()
+        token_data = fetch_token(
+            cfg,
+            username=req.username,
+            password=req.password,
+            scope=req.scope,
+        )
+        if req.write_to_env and token_data.get("access_token"):
+            write_token_to_env(token_data["access_token"], env_path=req.env_path)
+        return ok({
+            "access_token": token_data.get("access_token"),
+            "token_type":   token_data.get("token_type", "Bearer"),
+            "expires_in":   token_data.get("expires_in"),
+            "scope":        token_data.get("scope"),
+            "written_to_env": req.write_to_env,
+            "env_path":     req.env_path,
+        }, _time.time() - t0)
+    except Exception as exc:
+        return err(str(exc), exc)
 
 
 @app.get("/releases", tags=["Utility"])
