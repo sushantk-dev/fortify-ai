@@ -42,3 +42,75 @@ python fortifyai.py --app-name 1038\_US\_D360-Citi-Triggers-on-Cloud\_USIS --lis
 
 python fortifyai.py --app-name 1038\_US\_D360-Citi-Triggers-on-Cloud\_USIS --list-releases --verbose
 
+
+
+uvicorn api\_server:app --host 0.0.0.0 --port 8000 --reload
+
+
+
+GET /releases?app\_name=1038\_US\_MyApp\_USIS
+
+
+
+GET /config/validate //validate .env
+
+
+
+GET /health //liveness probe
+
+&#x20;
+
+/pipeline/app-name
+
+{
+
+&#x20; "app\_name": "1038\_US\_MyApp\_USIS",    // required
+
+&#x20; "config": { /\* ConfigOverrides \*/ }    // optional
+
+}
+
+
+
+/pipeline/dry-run
+
+{
+
+&#x20; "release\_id": 1723380,               // optional (pick one source)
+
+&#x20; "report\_path": null,                 // optional
+
+&#x20; "app\_name": null,                    // optional
+
+&#x20; "config": { /\* ConfigOverrides \*/ }    // optional
+
+}
+
+
+
+/pipeline/live
+
+{
+
+&#x20; "release\_id": 1723380,          // required
+
+&#x20; "config": { /\* ConfigOverrides \*/ } // optional
+
+}
+
+
+
+/pipeline/offline
+
+
+
+{
+
+&#x20; "report\_path": "/tmp/report.json",  // required
+
+&#x20; "release\_id": 0,                   // optional (0 = read from file)
+
+&#x20; "config": { /\* ConfigOverrides \*/ }   // optional
+
+}
+
