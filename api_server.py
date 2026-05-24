@@ -400,15 +400,31 @@ def config_validate():
 
 @app.get("/releases", tags=["Utility"])
 def list_releases(
-    app_name: str = Query(..., description="Fortify application name"),
+    app_name: Optional[str] = Query(default=None, description="Fortify application name"),
+    app_id: Optional[int] = Query(default=None, description="Fortify applicationId (skips name lookup)"),
 ):
-    """List all releases for a given application name."""
+    """
+    List all releases for an application.
+
+    Provide **either** `app_name` or `app_id` as a query parameter.
+    Using `app_id` skips the name-lookup API call and is preferred when the ID is known.
+
+    Examples:
+      GET /releases?app_name=1038_US_D360-Citi-Triggers-on-Cloud_USIS
+      GET /releases?app_id=147266
+    """
     try:
+        if not app_name and not app_id:
+            raise ValueError("Provide either app_name or app_id as a query parameter")
         cfg = load_config()
         from fortify_client import FortifyClient
         client = FortifyClient.from_config(cfg)
-        releases = client.get_releases(app_name)
-        return ok({"app_name": app_name, "releases": releases})
+        if app_id is None:
+            # name → app_id first
+            app = client.get_application_by_name(app_name)
+            app_id = app["applicationId"]
+        releases = client.get_releases(app_id)
+        return ok({"app_id": app_id, "app_name": app_name, "releases": releases})
     except Exception as exc:
         return err(str(exc), exc)
 
