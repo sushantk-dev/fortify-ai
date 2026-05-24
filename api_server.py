@@ -413,19 +413,29 @@ def config_validate():
 
 
 @app.post("/auth/token", tags=["Utility"])
-def auth_token(req: AuthTokenRequest = AuthTokenRequest()):
+def auth_token(req: AuthTokenRequest):
     """
     Fetch a fresh Fortify Bearer token via OAuth2 password grant and
     optionally write it back to `FORTIFY_API_TOKEN` in `.env`.
 
-    Credentials are read from `.env` (`FORTIFY_USERNAME`, `FORTIFY_PASSWORD`,
-    `FORTIFY_SCOPE`) unless overridden in the request body.
+    Send as **JSON body** (`Content-Type: application/json`):
+
+        {
+          "username":     null,
+          "password":     null,
+          "scope":        null,
+          "write_to_env": true,
+          "env_path":     ".env"
+        }
+
+    All fields are optional — null values fall back to .env values
+    (FORTIFY_USERNAME, FORTIFY_PASSWORD, FORTIFY_SCOPE).
 
     Flow:
-      POST {FORTIFY_BASE_URL}/oauth/token
+      POST {FORTIFY_BASE_URL}/oauth/token   (form-encoded internally)
         grant_type=password  scope=api-tenant
-        username=<from env>  password=<from env>
-        security_code=       do_totp=false
+        username=<FORTIFY_USERNAME>  password=<FORTIFY_PASSWORD>
+        security_code=  do_totp=false
       → access_token written to FORTIFY_API_TOKEN in .env (if write_to_env=true)
 
     Returns:
