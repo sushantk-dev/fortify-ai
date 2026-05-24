@@ -25,7 +25,8 @@ Console output:
 
 from __future__ import annotations
 
-import json
+import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -33,6 +34,120 @@ from typing import Optional
 from loguru import logger
 
 from state import AgentState
+
+
+# ── LLM-generated next steps ──────────────────────────────────────────────────
+
+_NEXT_STEPS_SYSTEM = """You are a senior Java security engineer writing an escalation report for a
+developer who needs to manually fix a vulnerable Maven dependency.
+
+You will be given the full context of what the automated pipeline tried and why
+it failed. Write 4-6 concrete, specific, numbered action steps the developer
+should take — tailored to THIS failure, not a generic checklist.
+
+Rules:
+- Be specific: reference actual class names, methods, versions, CVEs given.
+- If the build failed due to a broken API, name the API and suggest an alternative.
+- If no safe version exists, say so explicitly and suggest a mitigation path.
+- If at-risk call sites are listed, reference them by file name.
+- Write plain text only — no markdown, no bullet symbols, just numbered lines.
+- Maximum 6 steps. Each step one sentence.
+- Start each step with the step number and a period, e.g. "1. ..."
+"""
+
+_NEXT_STEPS_USER = """Dependency:        {group_id}:{artifact_id} {current_version}
+CVEs:              {cves}
+Severity:          {severity}
+Escalation reason: {reason}
+Versions tried:    {tried}
+AI confidence:     {confidence}
+At-risk files:     {at_risk}
+Breaking changes:  {breaking_count}
+Last build error (truncated):
+{build_error}
+Sonatype explanation:
+{explanation}
+
+Write the specific next steps for the developer.
+"""
+
+
+def _generate_next_steps_llm(
+    group: dict,
+    reason: str,
+    build_error: str,
+    tried_str: str,
+    gcp_project: str,
+    gcp_location: str,
+) -> Optional[str]:
+    """
+    Call the LLM to generate specific, tailored next steps for the escalation
+    report. Returns an indented numbered-list string, or None if the LLM is
+    unavailable or returns an unusable response.
+
+    Reuses _build_llm from ai_reasoning so there is one LLM init path.
+    Falls back transparently — callers always get a usable report.
+    """
+    try:
+        from ai_reasoning import _build_llm          # flat layout
+    except ImportError:
+        try:
+            from agents.ai_reasoning import _build_llm  # package layout
+        except ImportError:
+            logger.debug("[Report] ai_reasoning not importable — skipping LLM next steps")
+            return None
+
+    llm = _build_llm(gcp_project, gcp_location, max_output_tokens=512)
+    if llm is None:
+        return None
+
+    parsed       = group["parsed"]
+    ai_reasoning = group.get("ai_reasoning", {})
+    api_diff     = group.get("api_diff", {})
+    explanation  = (group.get("version_candidates") or {}).get("explanation", "(not available)")
+
+    at_risk     = ai_reasoning.get("at_risk_lines", [])
+    at_risk_str = ", ".join(at_risk[:5]) if at_risk else "(none identified)"
+
+    prompt = _NEXT_STEPS_USER.format(
+        group_id        = parsed["group_id"],
+        artifact_id     = parsed["artifact_id"],
+        current_version = parsed["current_version"],
+        cves            = ", ".join(group.get("cves", [])) or "(see Fortify finding)",
+        severity        = group.get("severity", "Unknown"),
+        reason          = reason[:500],
+        tried           = tried_str,
+        confidence      = ai_reasoning.get("confidence", "unknown"),
+        at_risk         = at_risk_str,
+        breaking_count  = api_diff.get("breaking_count", 0),
+        build_error     = build_error[:800] if build_error
+                          else "(no build error — escalated before build)",
+        explanation     = explanation[:600],
+    )
+
+    try:
+        from langchain_core.messages import HumanMessage, SystemMessage  # type: ignore
+        messages = [
+            SystemMessage(content=_NEXT_STEPS_SYSTEM),
+            HumanMessage(content=prompt),
+        ]
+        t0       = time.time()
+        response = llm.invoke(messages)
+        latency  = time.time() - t0
+        text     = response.content if hasattr(response, "content") else str(response)
+        logger.debug(f"[Report] LLM next steps generated ({latency:.1f}s, {len(text)} chars)")
+
+        # Validate — must start at least one numbered line
+        if not re.search(r"^\d+\.", text.strip(), re.MULTILINE):
+            logger.debug("[Report] LLM response lacked numbered steps — using fallback")
+            return None
+
+        # Indent each line for report formatting
+        return "\n".join(f"  {line}" for line in text.strip().splitlines())
+
+    except Exception as exc:
+        logger.debug(f"[Report] LLM next steps call failed: {exc} — using fallback")
+        return None
 
 
 # ── Report content builders ───────────────────────────────────────────────────
@@ -62,10 +177,16 @@ def _escalation_report(
     group: dict,
     escalation_reason: Optional[str],
     adr_results: list[dict],
+    gcp_project: str = "",
+    gcp_location: str = "us-central1",
 ) -> str:
     """
     Build the full escalation report text for one dependency group.
     Written to disk as a plain-text file.
+
+    When gcp_project is supplied the Next Steps section is generated by the
+    LLM and tailored to the specific failure. Falls back to the generic
+    hardcoded steps when Vertex AI is unavailable or gcp_project is empty.
     """
     parsed      = group["parsed"]
     group_id    = parsed["group_id"]
@@ -123,14 +244,30 @@ def _escalation_report(
             build_error[:2000],
         ]
 
+    # ── Next Steps: LLM-generated (specific) or hardcoded (generic fallback) ──
+    lines += ["", "── Next Steps ─────────────────────────────────────────"]
+
+    llm_steps = None
+    if gcp_project:
+        llm_steps = _generate_next_steps_llm(
+            group, reason, build_error, tried_str, gcp_project, gcp_location
+        )
+
+    if llm_steps:
+        lines += [
+            llm_steps,
+            "  (steps generated by FortifyAI based on this specific failure)",
+        ]
+    else:
+        lines += [
+            "  1. Review the Sonatype recommendation in Fortify SSC",
+            "  2. Check whether a patched version exists on Maven Central",
+            "  3. Consider a mitigating control if no safe version is available",
+            "  4. Contact the dependency maintainer if the CVE is unpatched",
+            "  5. Manually update the pom.xml and run mvn clean verify",
+        ]
+
     lines += [
-        "",
-        "── Next Steps ─────────────────────────────────────────",
-        "  1. Review the Sonatype recommendation in Fortify SSC",
-        "  2. Check whether a patched version exists on Maven Central",
-        "  3. Consider a mitigating control if no safe version is available",
-        "  4. Contact the dependency maintainer if the CVE is unpatched",
-        "  5. Manually update the pom.xml and run mvn clean verify",
         "",
         f"Timestamp:   {ts}",
         "=" * 60,
@@ -146,6 +283,8 @@ def write_escalation_report(
     escalation_reason: Optional[str],
     adr_results: list[dict],
     output_dir: str,
+    gcp_project: str = "",
+    gcp_location: str = "us-central1",
 ) -> Optional[str]:
     """
     Write the escalation report to {output_dir}/escalation_{artifact_id}_{ts}.txt.
@@ -163,7 +302,9 @@ def write_escalation_report(
         return None
 
     file_path = out_dir / filename
-    content   = _escalation_report(group, escalation_reason, adr_results)
+    content   = _escalation_report(
+        group, escalation_reason, adr_results, gcp_project, gcp_location
+    )
 
     try:
         file_path.write_text(content, encoding="utf-8")
@@ -182,6 +323,8 @@ def run_all_reports(
     pr_results: list[dict],
     output_dir: str,
     escalation_reason: Optional[str] = None,
+    gcp_project: str = "",
+    gcp_location: str = "us-central1",
 ) -> dict:
     """
     For each group:
@@ -223,7 +366,7 @@ def run_all_reports(
                 or "Automated fix was not possible"
             )
             path = write_escalation_report(
-                group, reason, adr_results, output_dir
+                group, reason, adr_results, output_dir, gcp_project, gcp_location
             )
             if path:
                 total_escalated += 1
@@ -253,6 +396,8 @@ def run_all_reports(
 def fortify_writeback_node(
     state: AgentState,
     output_dir: str,
+    gcp_project: str = "",
+    gcp_location: str = "us-central1",
 ) -> AgentState:
     """
     LangGraph node: fortify_writeback (now an escalation report writer).
@@ -261,6 +406,8 @@ def fortify_writeback_node(
             state["_adr_results"]
             state["_all_pr_results"]
             state["escalation_reason"]
+            state["_gcp_project"]      (optional — enables LLM next steps)
+            state["_gcp_location"]     (optional)
     Writes: state["status"]            → "fixed" or "escalated"
             state["_escalation_files"] → list of written report paths
             state["audit_trail"]
@@ -274,6 +421,11 @@ def fortify_writeback_node(
     pr_results:  list[dict] = state.get("_all_pr_results", []) # type: ignore[attr-defined]
     escalation_reason       = state.get("escalation_reason")
 
+    # Pick up GCP config from state if not injected as arg directly.
+    # graph.py stores these on state the same way it does for ai_reasoning_node.
+    effective_gcp_project  = gcp_project  or state.get("_gcp_project", "")            # type: ignore[attr-defined]
+    effective_gcp_location = gcp_location or state.get("_gcp_location", "us-central1") # type: ignore[attr-defined]
+
     if not groups:
         logger.warning("[Report] No groups in state — nothing to report")
         state["audit_trail"].append({"node": "fortify_writeback", "status": "skipped"})
@@ -285,6 +437,8 @@ def fortify_writeback_node(
         pr_results=pr_results,
         output_dir=output_dir,
         escalation_reason=escalation_reason,
+        gcp_project=effective_gcp_project,
+        gcp_location=effective_gcp_location,
     )
 
     if summary["total_fixed"] > 0:
