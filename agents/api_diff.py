@@ -140,22 +140,36 @@ def _run_japicmp(
     logger.debug(f"[API Diff] Running japicmp: {' '.join(cmd)}")
 
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            timeout=timeout,
         )
-        raw = result.stdout + result.stderr
 
+        console_lines: list[str] = []
+        try:
+            for line in proc.stdout:
+                line = line.rstrip()
+                logger.debug(f"[japicmp] {line}")
+                console_lines.append(line)
+        finally:
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                logger.warning("[API Diff] japicmp timed out")
+                return False, "japicmp timed out"
+
+        # Prefer the structured output file; fall back to console output
         if output_file.exists():
             raw = output_file.read_text(encoding="utf-8", errors="replace")
+        else:
+            raw = "\n".join(console_lines)
 
         return True, raw
 
-    except subprocess.TimeoutExpired:
-        logger.warning("[API Diff] japicmp timed out")
-        return False, "japicmp timed out"
     except FileNotFoundError:
         logger.warning("[API Diff] java not found — cannot run japicmp")
         return False, "java not on PATH"
