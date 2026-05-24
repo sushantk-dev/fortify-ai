@@ -83,8 +83,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Live mode
+  # Live mode — by release ID
   python fortifyai.py --release 1723380
+
+  # Live mode — by application name (resolves latest release automatically)
+  python fortifyai.py --app-name 1038_US_D360-Citi-Triggers-on-Cloud_USIS
+
+  # Application name with repo override
+  python fortifyai.py --app-name 1038_US_D360-Citi-Triggers-on-Cloud_USIS --repo acme/backend
 
   # Override repo at runtime (no need to edit .env)
   python fortifyai.py --release 1723380 --repo acme/backend
@@ -127,6 +133,17 @@ Examples:
         ),
     )
     parser.add_argument(
+        "--app-name",
+        metavar="APPLICATION_NAME",
+        default=None,
+        help=(
+            "Fortify application name "
+            "(e.g. '1038_US_D360-Citi-Triggers-on-Cloud_USIS'). "
+            "Looks up applicationId by name and resolves the latest release. "
+            "Cannot be combined with --report (offline mode)."
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -141,11 +158,18 @@ def main(argv: list[str] | None = None) -> int:
 
     offline_mode = args.report is not None
 
+    # ── Guard: --app-name + --report are mutually exclusive ─────────────────────
+    if args.app_name and args.report:
+        print("ERROR: --app-name and --report cannot be used together.", file=sys.stderr)
+        return 1
+
     logger.info("=" * 60)
     logger.info("FortifyAI starting up")
     logger.info(f"  Mode       : {'OFFLINE (--report)' if offline_mode else 'LIVE'}")
     if offline_mode:
         logger.info(f"  Report     : {args.report}")
+    elif args.app_name:
+        logger.info(f"  App Name   : {args.app_name}  (will resolve latest release)")
     else:
         logger.info(f"  Release ID : {args.release}")
     if args.repo:
@@ -242,6 +266,26 @@ def main(argv: list[str] | None = None) -> int:
 
     # ── Resolve vulnerabilities ───────────────────────────────────────────────
     release_id = args.release
+
+    if not offline_mode and args.app_name:
+        # Name-based lookup: find applicationId → latest releaseId
+        try:
+            client_tmp = FortifyClient.from_config(config)
+            release_id = client_tmp.resolve_release_id_from_app_name(args.app_name)
+            logger.info(
+                f"[AppName] ✅ Resolved '{args.app_name}' → releaseId={release_id}"
+            )
+        except ValueError as exc:
+            logger.error(f"[AppName] ❌ {exc}")
+            return 1
+        except Exception as exc:
+            logger.error(f"[AppName] ❌ Unexpected error during name lookup: {exc}")
+            return 1
+    elif not offline_mode and release_id == 0:
+        logger.error(
+            "[Config] ❌ Provide --release <ID> or --app-name <NAME> in live mode"
+        )
+        return 1
 
     if offline_mode:
         # ── Offline path: load from JSON file ─────────────────────────────────

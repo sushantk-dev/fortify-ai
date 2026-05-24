@@ -18,3 +18,15 @@ python fortifyai.py --release 1723380 --repo org/repo\_name
 
 python fortifyai.py --report report.json --repo org/repo\_name
 
+
+
+\# New: supply app name, latest release resolved automatically
+
+python fortifyai.py --app-name 1038\_US\_D360-Citi-Triggers-on-Cloud\_USIS
+
+
+
+\# Can still combine with --repo
+
+python fortifyai.py --app-name 1038\_US\_D360-Citi-Triggers-on-Cloud\_USIS --repo acme/backend
+

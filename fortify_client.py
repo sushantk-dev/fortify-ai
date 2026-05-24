@@ -8,11 +8,16 @@ Auth header:  Authorization: FortifyToken <token>
 Base path:    /api/v3/
 
 Endpoints used:
-  GET  /api/v3/applications
-  GET  /api/v3/applications/{applicationId}/releases
+  GET  /api/v3/applications                                                — list / filter by name
+  GET  /api/v3/applications/{applicationId}/releases                       — all releases or latest-first
   GET  /api/v3/releases/{releaseId}/vulnerabilities
   GET  /api/v3/releases/{releaseId}/vulnerabilities/{vulnId}/recommendations
   POST /api/v3/releases/{releaseId}/vulnerabilities/{vulnId}/comments
+
+Name-based lookup helpers (new):
+  get_application_by_name(name)          -> application dict
+  get_latest_release(application_id)     -> release dict (most recent by createdDate)
+  resolve_release_id_from_app_name(name) -> int releaseId (combines both steps)
 """
 
 from __future__ import annotations
@@ -175,6 +180,102 @@ class FortifyClient:
         apps = self._get_all_pages("/api/v3/applications")
         logger.info(f"[FortifyClient] Found {len(apps)} application(s)")
         return apps
+
+    def get_application_by_name(self, application_name: str) -> dict:
+        """
+        GET /api/v3/applications?filters=applicationName:<name>
+        Looks up an application by its exact name and returns the application dict.
+
+        The Fortify API uses server-side filter syntax:
+            filters=applicationName:<value>
+
+        Raises:
+            ValueError  — if no application matches the given name.
+            ValueError  — if more than one application matches (ambiguous).
+        """
+        logger.info(f"[FortifyClient] Looking up application by name: '{application_name}'")
+        params = {"filters": f"applicationName:{application_name}"}
+        data = self._get("/api/v3/applications", params=params)
+        items: list[dict] = data.get("items", [])
+
+        if not items:
+            raise ValueError(
+                f"No Fortify application found with name '{application_name}'. "
+                "Check the spelling or use get_applications() to list all available names."
+            )
+        if len(items) > 1:
+            names = [a.get("applicationName") for a in items]
+            raise ValueError(
+                f"Ambiguous application name '{application_name}': "
+                f"matched {len(items)} applications: {names}. "
+                "Provide a more specific name."
+            )
+
+        app = items[0]
+        logger.info(
+            f"[FortifyClient] Resolved '{application_name}' → "
+            f"applicationId={app.get('applicationId')}"
+        )
+        return app
+
+    def get_latest_release(self, application_id: int) -> dict:
+        """
+        GET /api/v3/applications/{applicationId}/releases
+            ?orderBy=releaseCreatedDate&orderByDirection=DESC&limit=1
+
+        Returns the single most-recently-created release for the application.
+
+        Raises:
+            ValueError — if the application has no releases.
+        """
+        logger.info(
+            f"[FortifyClient] Fetching latest release for application {application_id}"
+        )
+        path = f"/api/v3/applications/{application_id}/releases"
+        params = {
+            "orderBy": "releaseCreatedDate",
+            "orderByDirection": "DESC",
+            "limit": 1,
+            "offset": 0,
+        }
+        data = self._get(path, params=params)
+        items: list[dict] = data.get("items", [])
+
+        if not items:
+            raise ValueError(
+                f"Application {application_id} has no releases. "
+                "A scan must be submitted before FortifyAI can remediate."
+            )
+
+        release = items[0]
+        logger.info(
+            f"[FortifyClient] Latest release → "
+            f"releaseId={release.get('releaseId')}, "
+            f"releaseName='{release.get('releaseName')}', "
+            f"createdDate={release.get('releaseCreatedDate')}"
+        )
+        return release
+
+    def resolve_release_id_from_app_name(self, application_name: str) -> int:
+        """
+        Convenience: resolve an application name → latest releaseId in one call.
+
+        Equivalent to:
+            app     = client.get_application_by_name(application_name)
+            release = client.get_latest_release(app["applicationId"])
+            return  release["releaseId"]
+
+        Raises ValueError on lookup failure (propagated from both helpers).
+        """
+        app = self.get_application_by_name(application_name)
+        release = self.get_latest_release(app["applicationId"])
+        release_id: int = release["releaseId"]
+        logger.info(
+            f"[FortifyClient] Resolved '{application_name}' "
+            f"→ applicationId={app['applicationId']} "
+            f"→ releaseId={release_id}"
+        )
+        return release_id
 
     def get_releases(self, application_id: int) -> list[dict]:
         """
