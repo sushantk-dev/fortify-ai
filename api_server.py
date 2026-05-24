@@ -376,6 +376,9 @@ def _run_full_pipeline(
         "dry_run": dry_run,
     }
 
+@app.on_event("startup")
+async def startup_event():
+    auth_token()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # UTILITY ENDPOINTS
