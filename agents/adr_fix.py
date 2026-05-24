@@ -164,7 +164,6 @@ def invoke_adr(
     project_path: str,
     commit_id: str,
     target_versions: dict | None = None,
-    timeout: int = 600,
 ) -> tuple[bool, str, str]:
     """
     Run adr_fortify.py --commit <commit_id> --push --target-versions <json>.
@@ -208,7 +207,7 @@ def invoke_adr(
             stdout_lines.append(line)
             logger.debug(f"[ADR] {line}")   # streams live to the terminal
 
-        proc.wait(timeout=timeout)
+        proc.wait()   # no timeout — wait until ADR fully completes
         elapsed = int(time.time() - t0)
         stdout_text = "\n".join(stdout_lines)
 
@@ -217,11 +216,6 @@ def invoke_adr(
             logger.debug(f"[ADR Fix] stdout (last 1000):\n{stdout_text[-1000:]}")
         return proc.returncode == 0, stdout_text, ""
 
-    except subprocess.TimeoutExpired:
-        if proc:
-            proc.kill()
-        logger.error(f"[ADR Fix] ADR timed out after {timeout}s")
-        return False, "", f"ADR timed out after {timeout}s"
     except FileNotFoundError:
         logger.error(f"[ADR Fix] adr.py not found at {adr_path}")
         return False, "", f"adr.py not found at {adr_path}"
