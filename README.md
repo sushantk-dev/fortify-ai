@@ -62,6 +62,14 @@ GET /health //liveness probe
 
 POST /auth/token
 
+
+
+GET /pipeline/status/{pipeline\_id}
+
+
+
+GET /pipeline/status/{pipeline\_id}/{stage\_name}
+
 &#x20;
 
 /pipeline/app-name
