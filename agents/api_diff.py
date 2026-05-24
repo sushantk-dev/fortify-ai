@@ -132,9 +132,9 @@ def _run_japicmp(
         "java", "-jar", str(japicmp_jar),
         "--old", str(old_jar),
         "--new", str(new_jar),
-        "--output-txt", str(output_file),
+        "--report-path", str(output_file),  # correct flag (--output-txt is invalid)
         "--ignore-missing-classes",
-        "--report-only-filename",          # shorter output
+        "--report-only-filename",           # shorter output
     ]
 
     logger.debug(f"[API Diff] Running japicmp: {' '.join(cmd)}")
@@ -161,6 +161,15 @@ def _run_japicmp(
                 proc.wait()
                 logger.warning("[API Diff] japicmp timed out")
                 return False, "japicmp timed out"
+
+        # Non-zero exit = japicmp rejected the arguments or crashed
+        if proc.returncode != 0:
+            console_output = "\n".join(console_lines)
+            logger.warning(
+                f"[API Diff] japicmp exited {proc.returncode} — "
+                f"likely a bad argument. Output:\n{console_output[:400]}"
+            )
+            return False, console_output
 
         # Prefer the structured output file; fall back to console output
         if output_file.exists():
