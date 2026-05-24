@@ -314,6 +314,61 @@ def _scan_java_files_grep(
         return []
 
 
+# ── Calling code snippet builder ───────────────────────────────────────────────
+
+def _build_calling_code_snippet(
+    project_path: Path,
+    calling_files: list[str],
+    max_chars: int = 2000,
+) -> str:
+    """
+    Read the calling Java files and concatenate their content into a single
+    snippet for the AI Reasoning prompt.
+
+    Each file is prefixed with a header showing its relative path so Claude
+    knows which file it is looking at. Total output is capped at max_chars
+    so we never blow the context window.
+
+    Format:
+      // --- src/main/java/com/example/Service.java ---
+      <file content>
+    """
+    if not calling_files:
+        return ""
+
+    parts: list[str] = []
+    total = 0
+
+    for rel_path in calling_files:
+        if total >= max_chars:
+            break
+
+        file_path = project_path / rel_path
+        if not file_path.exists():
+            # rglob fallback — relative path may be platform-mismatched
+            matches = list(project_path.rglob(Path(rel_path).name))
+            if not matches:
+                continue
+            file_path = matches[0]
+
+        try:
+            source = file_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        header = f"// --- {rel_path} ---\n"
+        remaining = max_chars - total
+        trimmed = source[: remaining - len(header)]
+        if len(source) > len(trimmed):
+            trimmed += "\n// ... (truncated)"
+
+        block = header + trimmed
+        parts.append(block)
+        total += len(block)
+
+    return "\n\n".join(parts)
+
+
 # ── Main context resolution ───────────────────────────────────────────────────
 
 def locate_dependency(
@@ -432,10 +487,21 @@ def locate_all_groups(
                 property_defined_in=None,
             )
             calling_files = []
+            calling_code_snippet = ""  # no files found in fallback path
+
+        # Build the actual source snippet for the AI Reasoning prompt.
+        # _calling_code_snippet is what Claude reads — file paths alone are not enough.
+        calling_code_snippet = _build_calling_code_snippet(project_path, calling_files)
+        if calling_code_snippet:
+            logger.debug(
+                f"[Context] Built calling code snippet for {parsed['artifact_id']}: "
+                f"{len(calling_code_snippet)} chars across {len(calling_files)} file(s)"
+            )
 
         enriched_group = dict(group)
         enriched_group["pom_location"] = pom_location
         enriched_group["calling_files"] = calling_files
+        enriched_group["_calling_code_snippet"] = calling_code_snippet
         enriched.append(enriched_group)
 
     return enriched

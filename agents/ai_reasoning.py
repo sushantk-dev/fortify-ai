@@ -96,11 +96,16 @@ Assess the upgrade safety and respond in JSON only.
 
 # ── LLM initialisation ────────────────────────────────────────────────────────
 
-def _build_llm(gcp_project: str, gcp_location: str):
+def _build_llm(gcp_project: str, gcp_location: str, max_output_tokens: int = 1024):
     """
     Build a ChatVertexAI instance.
     Tries claude-sonnet-4-5 first, falls back to gemini-1.5-pro-002.
     Returns the LLM object or None if Vertex AI is unavailable.
+
+    max_output_tokens:
+      1024  — default, sufficient for AI Reasoning JSON verdict (~6 fields)
+      4096  — use for AI Code Fix, which may return multi-patch JSON responses
+               that silently truncate and fail json.loads() at 1024 tokens
     """
     try:
         import vertexai  # type: ignore
@@ -111,7 +116,7 @@ def _build_llm(gcp_project: str, gcp_location: str):
         try:
             llm = ChatVertexAI(
                 model_name="claude-sonnet-4-5@20251001",
-                max_output_tokens=1024,
+                max_output_tokens=max_output_tokens,
                 temperature=0.1,          # low temp for deterministic JSON
             )
             logger.debug("[AI Reasoning] Using claude-sonnet-4-5 on Vertex AI")
@@ -123,7 +128,7 @@ def _build_llm(gcp_project: str, gcp_location: str):
             )
             llm = ChatVertexAI(
                 model_name="gemini-1.5-pro-002",
-                max_output_tokens=1024,
+                max_output_tokens=max_output_tokens,
                 temperature=0.1,
             )
             logger.debug("[AI Reasoning] Using gemini-1.5-pro-002 on Vertex AI")

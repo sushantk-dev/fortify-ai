@@ -301,9 +301,11 @@ def ai_code_fix_node(
         state["ai_code_fix_applied"] = False
         return state
 
-    # Build LLM (reuse ai_reasoning builder)
+    # Build LLM (reuse ai_reasoning builder).
+    # Use 4096 tokens — multi-patch JSON responses silently truncate at 1024,
+    # causing json.loads() to fail and all patches to be dropped (Gap 2 fix).
     from agents.ai_reasoning import _build_llm
-    llm = _build_llm(gcp_project, gcp_location)
+    llm = _build_llm(gcp_project, gcp_location, max_output_tokens=4096)
 
     proj = Path(project_path)
     any_applied = False
