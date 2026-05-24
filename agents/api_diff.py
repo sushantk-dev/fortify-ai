@@ -121,20 +121,21 @@ def _run_japicmp(
     japicmp_jar: Path,
     old_jar: Path,
     new_jar: Path,
-    output_file: Path,
     timeout: int = 60,
 ) -> tuple[bool, str]:
     """
-    Run japicmp and write text diff to output_file.
+    Run japicmp (v0.26) and return its stdout as the diff text.
+    japicmp 0.26 has no text file output flag — the diff is printed to stdout.
     Returns (success: bool, raw_output: str).
     """
+    # japicmp 0.26: use -o/-n short flags; text diff goes to stdout (no file output flag)
     cmd = [
         "java", "-jar", str(japicmp_jar),
-        "--old", str(old_jar),
-        "--new", str(new_jar),
-        "--report-path", str(output_file),  # correct flag (--output-txt is invalid)
+        "-o", str(old_jar),
+        "-n", str(new_jar),
         "--ignore-missing-classes",
-        "--report-only-filename",           # shorter output
+        "--only-incompatible",              # only show breaking changes
+        "--report-only-filename",           # shorter class names in output
     ]
 
     logger.debug(f"[API Diff] Running japicmp: {' '.join(cmd)}")
@@ -143,17 +144,20 @@ def _run_japicmp(
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.PIPE,         # keep stderr separate so it doesn't pollute the diff
             text=True,
         )
 
-        console_lines: list[str] = []
+        stdout_lines: list[str] = []
         try:
             for line in proc.stdout:
                 line = line.rstrip()
                 logger.debug(f"[japicmp] {line}")
-                console_lines.append(line)
+                stdout_lines.append(line)
         finally:
+            stderr_out = proc.stderr.read()
+            if stderr_out.strip():
+                logger.debug(f"[japicmp stderr] {stderr_out.strip()}")
             try:
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
@@ -162,21 +166,17 @@ def _run_japicmp(
                 logger.warning("[API Diff] japicmp timed out")
                 return False, "japicmp timed out"
 
-        # Non-zero exit = japicmp rejected the arguments or crashed
+        # Non-zero exit = bad arguments or hard crash
         if proc.returncode != 0:
-            console_output = "\n".join(console_lines)
+            output = "\n".join(stdout_lines)
+            if stderr_out.strip():
+                output = stderr_out.strip() + "\n" + output
             logger.warning(
-                f"[API Diff] japicmp exited {proc.returncode} — "
-                f"likely a bad argument. Output:\n{console_output[:400]}"
+                f"[API Diff] japicmp exited {proc.returncode}.\n{output[:400]}"
             )
-            return False, console_output
+            return False, output
 
-        # Prefer the structured output file; fall back to console output
-        if output_file.exists():
-            raw = output_file.read_text(encoding="utf-8", errors="replace")
-        else:
-            raw = "\n".join(console_lines)
-
+        raw = "\n".join(stdout_lines)
         return True, raw
 
     except FileNotFoundError:
@@ -410,8 +410,7 @@ def run_api_diff(
                 f"japicmp JAR not found at {japicmp_jar_path}"
             )
 
-        diff_file = tmp_path / "diff.txt"
-        success, raw_output = _run_japicmp(japicmp_jar, old_jar, new_jar, diff_file)
+        success, raw_output = _run_japicmp(japicmp_jar, old_jar, new_jar)
 
         if not success:
             return _no_japicmp_result(
