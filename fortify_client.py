@@ -277,6 +277,128 @@ class FortifyClient:
         )
         return release_id
 
+    def get_all_releases_by_app_name(
+        self,
+        application_name: str,
+        order_by: str = "releaseCreatedDate",
+        order_direction: str = "DESC",
+    ) -> tuple[dict, list[dict]]:
+        """
+        Convenience: resolve an application name -> all of its releases.
+
+        GET /api/v3/applications?filters=applicationName:<name>
+          then
+        GET /api/v3/applications/{applicationId}/releases
+            ?orderBy=<order_by>&orderByDirection=<order_direction>
+
+        Parameters:
+            application_name  — exact Fortify application name
+            order_by          — field to sort releases by (default: releaseCreatedDate)
+            order_direction   — "ASC" or "DESC" (default: DESC = newest first)
+
+        Returns:
+            (app, releases)
+                app      — application dict (applicationId, applicationName, …)
+                releases — list of all release dicts, sorted as requested
+
+        Raises:
+            ValueError — propagated from get_application_by_name if name not found
+            ValueError — if the application has no releases
+        """
+        app = self.get_application_by_name(application_name)
+        app_id: int = app["applicationId"]
+
+        logger.info(
+            f"[FortifyClient] Fetching all releases for "
+            f"'{application_name}' (applicationId={app_id})"
+        )
+        path = f"/api/v3/applications/{app_id}/releases"
+        params = {
+            "orderBy": order_by,
+            "orderByDirection": order_direction,
+        }
+        releases = self._get_all_pages(path, params)
+
+        if not releases:
+            raise ValueError(
+                f"Application '{application_name}' (id={app_id}) has no releases. "
+                "A scan must be submitted before FortifyAI can list releases."
+            )
+
+        logger.info(
+            f"[FortifyClient] Found {len(releases)} release(s) "
+            f"for '{application_name}'"
+        )
+        return app, releases
+
+    def print_releases_summary(
+        self,
+        application_name: str,
+        order_direction: str = "DESC",
+    ) -> tuple[dict, list[dict]]:
+        """
+        Fetch and pretty-print all releases for an application name.
+
+        Console output (newest-first by default):
+
+            Application : 1038_US_D360-Citi-Triggers-on-Cloud_USIS  (id=147266)
+            Total       : 15 release(s)
+
+            #   releaseId   releaseName                      created              status      rating  C  H  M  L
+            1   1723380     production_release_2026Q1.A0     2026-03-17T07:29:51  Completed   2       0  2  0  3
+            2   ...
+
+        Returns (app, releases) so callers can act on the data without a second API call.
+        """
+        app, releases = self.get_all_releases_by_app_name(
+            application_name, order_direction=order_direction
+        )
+
+        app_name = app.get("applicationName", application_name)
+        app_id   = app.get("applicationId")
+
+        sep = "=" * 90
+        header = (
+            f"\n{sep}\n"
+            f"  Application : {app_name}  (id={app_id})\n"
+            f"  Total       : {len(releases)} release(s)\n"
+            f"{sep}"
+        )
+        logger.info(header)
+
+        col_fmt = (
+            "{idx:<4} {rid:<12} {name:<40} {created:<22} "
+            "{status:<12} {rating:<7} {c:<3} {h:<3} {m:<3} {l:<3}"
+        )
+        col_header = col_fmt.format(
+            idx="#", rid="releaseId", name="releaseName",
+            created="created", status="status",
+            rating="rating", c="C", h="H", m="M", l="L",
+        )
+        logger.info(col_header)
+        logger.info("-" * 90)
+
+        for idx, rel in enumerate(releases, start=1):
+            created_raw = rel.get("releaseCreatedDate", "")
+            created = created_raw[:19] if created_raw else ""
+            logger.info(
+                col_fmt.format(
+                    idx=idx,
+                    rid=rel.get("releaseId", ""),
+                    name=(rel.get("releaseName") or "")[:40],
+                    created=created,
+                    status=(rel.get("currentAnalysisStatusType") or "")[:12],
+                    rating=rel.get("rating", ""),
+                    c=rel.get("critical", 0),
+                    h=rel.get("high", 0),
+                    m=rel.get("medium", 0),
+                    l=rel.get("low", 0),
+                )
+            )
+
+        logger.info("=" * 90)
+        return app, releases
+
     def get_releases(self, application_id: int) -> list[dict]:
         """
         GET /api/v3/applications/{applicationId}/releases

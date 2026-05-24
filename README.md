@@ -30,3 +30,15 @@ python fortifyai.py --app-name 1038\_US\_D360-Citi-Triggers-on-Cloud\_USIS
 
 python fortifyai.py --app-name 1038\_US\_D360-Citi-Triggers-on-Cloud\_USIS --repo acme/backend
 
+
+
+\# List all releases for an app, then exit — no pipeline run
+
+python fortifyai.py --app-name 1038\_US\_D360-Citi-Triggers-on-Cloud\_USIS --list-releases
+
+
+
+\# --verbose shows DEBUG logs too
+
+python fortifyai.py --app-name 1038\_US\_D360-Citi-Triggers-on-Cloud\_USIS --list-releases --verbose
+

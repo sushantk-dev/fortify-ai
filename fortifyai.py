@@ -89,6 +89,9 @@ Examples:
   # Live mode — by application name (resolves latest release automatically)
   python fortifyai.py --app-name 1038_US_D360-Citi-Triggers-on-Cloud_USIS
 
+  # List all releases for an application and exit (no pipeline run)
+  python fortifyai.py --app-name 1038_US_D360-Citi-Triggers-on-Cloud_USIS --list-releases
+
   # Application name with repo override
   python fortifyai.py --app-name 1038_US_D360-Citi-Triggers-on-Cloud_USIS --repo acme/backend
 
@@ -144,6 +147,17 @@ Examples:
         ),
     )
     parser.add_argument(
+        "--list-releases",
+        action="store_true",
+        default=False,
+        help=(
+            "List all releases for the application supplied via --app-name, "
+            "then exit without running the remediation pipeline. "
+            "Output is sorted newest-first (DESC) and includes releaseId, "
+            "releaseName, status, rating, and severity counts."
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -158,9 +172,12 @@ def main(argv: list[str] | None = None) -> int:
 
     offline_mode = args.report is not None
 
-    # ── Guard: --app-name + --report are mutually exclusive ─────────────────────
+    # ── Guards ───────────────────────────────────────────────────────────────────
     if args.app_name and args.report:
         print("ERROR: --app-name and --report cannot be used together.", file=sys.stderr)
+        return 1
+    if args.list_releases and not args.app_name:
+        print("ERROR: --list-releases requires --app-name.", file=sys.stderr)
         return 1
 
     logger.info("=" * 60)
@@ -169,7 +186,8 @@ def main(argv: list[str] | None = None) -> int:
     if offline_mode:
         logger.info(f"  Report     : {args.report}")
     elif args.app_name:
-        logger.info(f"  App Name   : {args.app_name}  (will resolve latest release)")
+        mode_label = "list releases" if args.list_releases else "will resolve latest release"
+        logger.info(f"  App Name   : {args.app_name}  ({mode_label})")
     else:
         logger.info(f"  Release ID : {args.release}")
     if args.repo:
@@ -268,9 +286,22 @@ def main(argv: list[str] | None = None) -> int:
     release_id = args.release
 
     if not offline_mode and args.app_name:
-        # Name-based lookup: find applicationId → latest releaseId
         try:
             client_tmp = FortifyClient.from_config(config)
+
+            # ── --list-releases: print all releases and exit ───────────────────
+            if args.list_releases:
+                try:
+                    client_tmp.print_releases_summary(args.app_name)
+                except ValueError as exc:
+                    logger.error(f"[ListReleases] ❌ {exc}")
+                    return 1
+                except Exception as exc:
+                    logger.error(f"[ListReleases] ❌ Unexpected error: {exc}")
+                    return 1
+                return 0   # done — no pipeline run
+
+            # ── Normal: resolve latest releaseId then continue ─────────────────
             release_id = client_tmp.resolve_release_id_from_app_name(args.app_name)
             logger.info(
                 f"[AppName] ✅ Resolved '{args.app_name}' → releaseId={release_id}"
