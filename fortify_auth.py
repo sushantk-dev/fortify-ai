@@ -145,10 +145,16 @@ def write_token_to_env(token: str, env_path: str | Path = ".env") -> None:
 
     - If the key already exists, the value is replaced on that line.
     - If the key is absent, a new line is appended.
+    - A relative env_path is resolved against the directory containing
+      this file (fortify_auth.py), so it works regardless of the cwd
+      uvicorn was launched from.
 
     The file is read and written as UTF-8; all other lines are untouched.
     """
     env_file = Path(env_path)
+    if not env_file.is_absolute():
+        # Resolve relative to the project root (same dir as this module)
+        env_file = (Path(__file__).parent / env_path).resolve()
     original = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
 
     key = "FORTIFY_API_TOKEN"

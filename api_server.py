@@ -413,7 +413,7 @@ def config_validate():
 
 
 @app.post("/auth/token", tags=["Utility"])
-def auth_token(req: AuthTokenRequest):
+def auth_token(req: Optional[AuthTokenRequest] = None):
     """
     Fetch a fresh Fortify Bearer token via OAuth2 password grant and
     optionally write it back to `FORTIFY_API_TOKEN` in `.env`.
@@ -445,22 +445,24 @@ def auth_token(req: AuthTokenRequest):
     t0 = _time.time()
     try:
         from fortify_auth import fetch_token, write_token_to_env
-        cfg = load_config()
+        # req is fully optional — all fields fall back to .env values when absent
+        _req = req or AuthTokenRequest()
+        cfg  = load_config()
         token_data = fetch_token(
             cfg,
-            username=req.username,
-            password=req.password,
-            scope=req.scope,
+            username=_req.username,
+            password=_req.password,
+            scope=_req.scope,
         )
-        if req.write_to_env and token_data.get("access_token"):
-            write_token_to_env(token_data["access_token"], env_path=req.env_path)
+        if _req.write_to_env and token_data.get("access_token"):
+            write_token_to_env(token_data["access_token"], env_path=_req.env_path)
         return ok({
-            "access_token": token_data.get("access_token"),
-            "token_type":   token_data.get("token_type", "Bearer"),
-            "expires_in":   token_data.get("expires_in"),
-            "scope":        token_data.get("scope"),
-            "written_to_env": req.write_to_env,
-            "env_path":     req.env_path,
+            "access_token":   token_data.get("access_token"),
+            "token_type":     token_data.get("token_type", "Bearer"),
+            "expires_in":     token_data.get("expires_in"),
+            "scope":          token_data.get("scope"),
+            "written_to_env": _req.write_to_env,
+            "env_path":       _req.env_path,
         }, _time.time() - t0)
     except Exception as exc:
         return err(str(exc), exc)
