@@ -180,30 +180,31 @@ class ConfigOverrides(BaseModel):
 
 class LivePipelineRequest(BaseModel):
     release_id: int = Field(..., description="Fortify SSC release ID to remediate")
-    repo: Optional[str] = Field(default=None, description="GitHub repo in owner/repo format — overrides GITHUB_REPO from config")
-    project_path: Optional[str] = Field(default=None, description="Absolute path to Maven project root — overrides PROJECT_PATH from config")
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
 class AppNamePipelineRequest(BaseModel):
     app_name: str = Field(..., description="Fortify application name — resolved to app_id then latest release_id")
-    repo: Optional[str] = Field(default=None, description="GitHub repo in owner/repo format — overrides GITHUB_REPO from config")
-    project_path: Optional[str] = Field(default=None, description="Absolute path to Maven project root — overrides PROJECT_PATH from config")
+    repo: Optional[str] = Field(
+        default=None,
+        description=(
+            "GitHub repository in 'owner/repo' format. "
+            "Mirrors the --repo CLI flag: overrides GITHUB_REPO in .env and triggers an "
+            "automatic clone so no local PROJECT_PATH is needed. "
+            "e.g. \"acme/backend\""
+        ),
+    )
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
 class AppIdPipelineRequest(BaseModel):
     app_id: int = Field(..., description="Fortify applicationId — skips name lookup, resolves directly to latest release_id")
-    repo: Optional[str] = Field(default=None, description="GitHub repo in owner/repo format — overrides GITHUB_REPO from config")
-    project_path: Optional[str] = Field(default=None, description="Absolute path to Maven project root — overrides PROJECT_PATH from config")
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
 class OfflinePipelineRequest(BaseModel):
     report_path: str = Field(..., description="Absolute path to Fortify JSON report on disk")
     release_id: int = Field(default=0, description="Release ID override (0 = read from file)")
-    repo: Optional[str] = Field(default=None, description="GitHub repo in owner/repo format — overrides GITHUB_REPO from config")
-    project_path: Optional[str] = Field(default=None, description="Absolute path to Maven project root — overrides PROJECT_PATH from config")
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
@@ -213,8 +214,6 @@ class DryRunRequest(BaseModel):
     report_path: Optional[str] = Field(default=None, description="Use offline JSON if provided")
     app_name: Optional[str] = Field(default=None, description="Fortify application name (resolved to app_id → release_id)")
     app_id: Optional[int] = Field(default=None, description="Fortify applicationId (skips name lookup)")
-    repo: Optional[str] = Field(default=None, description="GitHub repo in owner/repo format — overrides GITHUB_REPO from config")
-    project_path: Optional[str] = Field(default=None, description="Absolute path to Maven project root — overrides PROJECT_PATH from config")
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
@@ -298,8 +297,6 @@ class PartialPipelineRequest(BaseModel):
     report_path: Optional[str] = Field(default=None, description="Offline JSON report path (skips SSC API)")
     app_name: Optional[str] = Field(default=None, description="Fortify application name (resolved to app_id → release_id)")
     app_id: Optional[int] = Field(default=None, description="Fortify applicationId (skips name lookup, resolves to latest release_id)")
-    repo: Optional[str] = Field(default=None, description="GitHub repo in owner/repo format — overrides GITHUB_REPO from config")
-    project_path: Optional[str] = Field(default=None, description="Absolute path to Maven project root — overrides PROJECT_PATH from config")
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
@@ -323,20 +320,9 @@ def err(detail: str, exc: Exception | None = None) -> JSONResponse:
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _apply_overrides(cfg: FortifyAIConfig, overrides: ConfigOverrides,
-                     repo: str | None = None,
-                     project_path: str | None = None) -> FortifyAIConfig:
-    """Return a new config with non-None override fields applied.
-
-    *repo* and *project_path* are convenience shortcuts that mirror the
-    ``--repo`` / ``PROJECT_PATH`` CLI/env flags.  Explicit ``config.*``
-    values take precedence if both are supplied.
-    """
+def _apply_overrides(cfg: FortifyAIConfig, overrides: ConfigOverrides) -> FortifyAIConfig:
+    """Return a new config with non-None override fields applied."""
     data = cfg.model_dump()
-    if repo is not None:
-        data["github_repo"] = repo
-    if project_path is not None:
-        data["project_path"] = project_path
     for field, value in overrides.model_dump().items():
         if value is not None:
             data[field] = value
@@ -727,7 +713,7 @@ async def pipeline_live(req: LivePipelineRequest):
         with _JOBS_LOCK:
             _JOBS[pid]["status"] = "running"
         try:
-            cfg = _apply_overrides(load_config(), req.config, repo=getattr(req, "repo", None), project_path=getattr(req, "project_path", None))
+            cfg = _apply_overrides(load_config(), req.config)
             client, raw_vulns, release_id, app_id = await loop.run_in_executor(
                 _EXECUTOR,
                 lambda: _resolve_vulnerabilities(cfg, req.release_id, None, None),
@@ -765,7 +751,7 @@ async def pipeline_offline(req: OfflinePipelineRequest):
         with _JOBS_LOCK:
             _JOBS[pid]["status"] = "running"
         try:
-            cfg = _apply_overrides(load_config(), req.config, repo=getattr(req, "repo", None), project_path=getattr(req, "project_path", None))
+            cfg = _apply_overrides(load_config(), req.config)
             client, raw_vulns, release_id, app_id = await loop.run_in_executor(
                 _EXECUTOR,
                 lambda: _resolve_vulnerabilities(cfg, req.release_id, req.report_path, None),
@@ -796,6 +782,12 @@ async def pipeline_app_name(req: AppNamePipelineRequest):
       2. GET /api/v3/applications/{applicationId}/releases?limit=1 → `releaseId`
       3. Full pipeline runs against that `releaseId`
 
+    Pass **`repo`** (`"owner/repo"`) to override `GITHUB_REPO` at runtime and trigger
+    an automatic clone — mirrors the `--repo` CLI flag so no local `PROJECT_PATH` is needed.
+
+    Equivalent CLI:
+        python fortifyai.py --app-name <app_name> --repo <owner/repo>
+
     Stages: (name→app_id→release_id) → triage → version-resolver → context → api-diff →
             ai-reasoning → adr-fix → pr-agent → fortify-writeback
     """
@@ -808,7 +800,10 @@ async def pipeline_app_name(req: AppNamePipelineRequest):
         with _JOBS_LOCK:
             _JOBS[pid]["status"] = "running"
         try:
-            cfg = _apply_overrides(load_config(), req.config, repo=getattr(req, "repo", None), project_path=getattr(req, "project_path", None))
+            cfg = _apply_overrides(load_config(), req.config)
+            # Mirror CLI behaviour: --repo overrides github_repo and triggers auto-clone
+            if req.repo:
+                object.__setattr__(cfg, "github_repo", req.repo)
             client, raw_vulns, release_id, app_id = await loop.run_in_executor(
                 _EXECUTOR,
                 lambda: _resolve_vulnerabilities(cfg, 0, None, req.app_name),
@@ -819,6 +814,7 @@ async def pipeline_app_name(req: AppNamePipelineRequest):
                                            pipeline_id=pid),
             )
             result["app_id"] = app_id
+            result["repo"] = req.repo  # echo back so callers know which repo was used
             _finish_job(pid, "completed", result=result, t0=t0)
         except Exception as exc:
             _finish_job(pid, "failed", error=str(exc), t0=t0)
@@ -850,7 +846,7 @@ async def pipeline_app_id(req: AppIdPipelineRequest):
         with _JOBS_LOCK:
             _JOBS[pid]["status"] = "running"
         try:
-            cfg = _apply_overrides(load_config(), req.config, repo=getattr(req, "repo", None), project_path=getattr(req, "project_path", None))
+            cfg = _apply_overrides(load_config(), req.config)
             client, raw_vulns, release_id, app_id = await loop.run_in_executor(
                 _EXECUTOR,
                 lambda: _resolve_vulnerabilities(cfg, 0, None, None, req.app_id),
@@ -890,7 +886,7 @@ async def pipeline_dry_run(req: DryRunRequest):
         with _JOBS_LOCK:
             _JOBS[pid]["status"] = "running"
         try:
-            cfg = _apply_overrides(load_config(), req.config, repo=getattr(req, "repo", None), project_path=getattr(req, "project_path", None))
+            cfg = _apply_overrides(load_config(), req.config)
             client, raw_vulns, release_id, app_id = await loop.run_in_executor(
                 _EXECUTOR,
                 lambda: _resolve_vulnerabilities(
@@ -1005,7 +1001,7 @@ def stage_version_resolver(req: VersionResolverRequest):
     """
     t0 = time.time()
     try:
-        cfg = _apply_overrides(load_config(), req.config, repo=getattr(req, "repo", None), project_path=getattr(req, "project_path", None))
+        cfg = _apply_overrides(load_config(), req.config)
         from fortify_client import FortifyClient
         from agents.version_resolver import resolve_all_groups
         client = FortifyClient.from_config(cfg)
@@ -1421,7 +1417,7 @@ def _make_partial_endpoint(stop_after: StageLabel):
             with _JOBS_LOCK:
                 _JOBS[pid]["status"] = "running"
             try:
-                cfg = _apply_overrides(load_config(), req.config, repo=getattr(req, "repo", None), project_path=getattr(req, "project_path", None))
+                cfg = _apply_overrides(load_config(), req.config)
                 client, raw_vulns, release_id, app_id = await loop.run_in_executor(
                     _EXECUTOR,
                     lambda: _resolve_vulnerabilities(
@@ -1471,5 +1467,4 @@ for _stage in STAGE_ORDER:
 
 if __name__ == "__main__":
     import uvicorn
-    auth_token()
     uvicorn.run("api_server:app", host="0.0.0.0", port=8000, reload=True)
