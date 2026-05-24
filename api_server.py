@@ -95,7 +95,12 @@ class LivePipelineRequest(BaseModel):
 
 
 class AppNamePipelineRequest(BaseModel):
-    app_name: str = Field(..., description="Fortify application name")
+    app_name: str = Field(..., description="Fortify application name — resolved to app_id then latest release_id")
+    config: ConfigOverrides = Field(default_factory=ConfigOverrides)
+
+
+class AppIdPipelineRequest(BaseModel):
+    app_id: int = Field(..., description="Fortify applicationId — skips name lookup, resolves directly to latest release_id")
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
@@ -109,7 +114,8 @@ class DryRunRequest(BaseModel):
     """Full analysis pipeline — ADR/PR/writeback are simulated, not executed."""
     release_id: int = Field(default=0)
     report_path: Optional[str] = Field(default=None, description="Use offline JSON if provided")
-    app_name: Optional[str] = None
+    app_name: Optional[str] = Field(default=None, description="Fortify application name (resolved to app_id → release_id)")
+    app_id: Optional[int] = Field(default=None, description="Fortify applicationId (skips name lookup)")
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
@@ -175,9 +181,10 @@ class FortifyWritebackRequest(BaseModel):
 # ── Partial pipeline ──────────────────────────────────────────────────────────
 
 class PartialPipelineRequest(BaseModel):
-    release_id: int = Field(default=0)
-    report_path: Optional[str] = Field(default=None, description="Use offline JSON if provided")
-    app_name: Optional[str] = None
+    release_id: int = Field(default=0, description="Fortify release ID (pick one source)")
+    report_path: Optional[str] = Field(default=None, description="Offline JSON report path (skips SSC API)")
+    app_name: Optional[str] = Field(default=None, description="Fortify application name (resolved to app_id → release_id)")
+    app_id: Optional[int] = Field(default=None, description="Fortify applicationId (skips name lookup, resolves to latest release_id)")
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
@@ -215,10 +222,16 @@ def _resolve_vulnerabilities(
     release_id: int,
     report_path: str | None,
     app_name: str | None,
+    app_id: int | None = None,
 ):
     """
-    Returns (client, raw_vulns, resolved_release_id).
-    Handles live / offline / app-name resolution transparently.
+    Returns (client, raw_vulns, resolved_release_id, resolved_app_id).
+
+    Resolution priority:
+      1. report_path  — offline mode, no SSC calls
+      2. release_id   — direct, fastest
+      3. app_id       — skips name lookup, calls GET /releases?limit=1
+      4. app_name     — name → app_id → release_id (two API calls)
     """
     from fortify_client import FortifyClient
     from offline_loader import load_report, NullFortifyClient
@@ -227,18 +240,26 @@ def _resolve_vulnerabilities(
         raw_vulns, file_release_id = load_report(report_path)
         effective_release_id = file_release_id if file_release_id else release_id
         client = NullFortifyClient(raw_vulns)
-        return client, raw_vulns, effective_release_id
+        return client, raw_vulns, effective_release_id, None
 
     client = FortifyClient.from_config(cfg)
+    resolved_app_id: int | None = app_id
 
-    if app_name:
-        release_id = client.resolve_release_id_from_app_name(app_name)
+    if app_name and not app_id:
+        # name → app_id (GET /api/v3/applications?filters=applicationName:<name>)
+        app = client.get_application_by_name(app_name)
+        resolved_app_id = app["applicationId"]
+
+    if resolved_app_id and not release_id:
+        # app_id → latest release_id (GET /api/v3/applications/{id}/releases?limit=1)
+        release = client.get_latest_release(resolved_app_id)
+        release_id = release["releaseId"]
 
     if release_id == 0:
-        raise ValueError("Provide release_id, report_path, or app_name")
+        raise ValueError("Provide one of: release_id, app_id, app_name, or report_path")
 
     raw_vulns = client.get_vulnerabilities(release_id)
-    return client, raw_vulns, release_id
+    return client, raw_vulns, release_id, resolved_app_id
 
 
 def _run_full_pipeline(
@@ -392,6 +413,38 @@ def list_releases(
         return err(str(exc), exc)
 
 
+@app.get("/resolve/app-name", tags=["Utility"])
+def resolve_app_name(
+    app_name: str = Query(..., description="Fortify application name to resolve"),
+):
+    """
+    Resolve an application name to its `applicationId` and latest `releaseId`.
+
+    Calls:
+      1. GET /api/v3/applications?filters=applicationName:<name>  → applicationId
+      2. GET /api/v3/applications/{applicationId}/releases?limit=1 → releaseId
+
+    Returns both IDs so callers can cache the `app_id` and use
+    `/pipeline/app-id` on subsequent requests (one fewer API call).
+    """
+    try:
+        cfg = load_config()
+        from fortify_client import FortifyClient
+        client = FortifyClient.from_config(cfg)
+        app = client.get_application_by_name(app_name)
+        app_id: int = app["applicationId"]
+        release = client.get_latest_release(app_id)
+        return ok({
+            "app_name": app_name,
+            "app_id": app_id,
+            "latest_release_id": release["releaseId"],
+            "latest_release_name": release.get("releaseName"),
+            "latest_release_date": release.get("releaseCreatedDate"),
+        })
+    except Exception as exc:
+        return err(str(exc), exc)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FULL PIPELINE ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -407,7 +460,7 @@ def pipeline_live(req: LivePipelineRequest):
     t0 = time.time()
     try:
         cfg = _apply_overrides(load_config(), req.config)
-        client, raw_vulns, release_id = _resolve_vulnerabilities(
+        client, raw_vulns, release_id, app_id = _resolve_vulnerabilities(
             cfg, req.release_id, None, None
         )
         result = _run_full_pipeline(cfg, client, raw_vulns, release_id)
@@ -427,7 +480,7 @@ def pipeline_offline(req: OfflinePipelineRequest):
     t0 = time.time()
     try:
         cfg = _apply_overrides(load_config(), req.config)
-        client, raw_vulns, release_id = _resolve_vulnerabilities(
+        client, raw_vulns, release_id, app_id = _resolve_vulnerabilities(
             cfg, req.release_id, req.report_path, None
         )
         result = _run_full_pipeline(cfg, client, raw_vulns, release_id)
@@ -439,18 +492,50 @@ def pipeline_offline(req: OfflinePipelineRequest):
 @app.post("/pipeline/app-name", tags=["Full Pipeline"])
 def pipeline_app_name(req: AppNamePipelineRequest):
     """
-    Run the **complete** pipeline by resolving an application name to its latest release.
+    Run the **complete** pipeline by resolving an application name → `app_id` → latest `release_id`.
 
-    Stages: (name lookup) → triage → version-resolver → context → api-diff →
+    Resolution steps:
+      1. GET /api/v3/applications?filters=applicationName:<name>  → `applicationId`
+      2. GET /api/v3/applications/{applicationId}/releases?limit=1 → `releaseId`
+      3. Full pipeline runs against that `releaseId`
+
+    If you already know the `applicationId`, use `/pipeline/app-id` to skip step 1.
+
+    Stages: (name→app_id→release_id) → triage → version-resolver → context → api-diff →
             ai-reasoning → adr-fix → pr-agent → fortify-writeback
     """
     t0 = time.time()
     try:
         cfg = _apply_overrides(load_config(), req.config)
-        client, raw_vulns, release_id = _resolve_vulnerabilities(
+        client, raw_vulns, release_id, app_id = _resolve_vulnerabilities(
             cfg, 0, None, req.app_name
         )
         result = _run_full_pipeline(cfg, client, raw_vulns, release_id)
+        result["app_id"] = app_id
+        return ok(result, time.time() - t0)
+    except Exception as exc:
+        return err(str(exc), exc)
+
+
+@app.post("/pipeline/app-id", tags=["Full Pipeline"])
+def pipeline_app_id(req: AppIdPipelineRequest):
+    """
+    Run the **complete** pipeline using a known Fortify `applicationId`.
+
+    Skips the name-lookup step — one fewer API call vs `/pipeline/app-name`.
+    Resolves `app_id → latest release_id` then runs the full pipeline.
+
+    Stages: (release lookup) → triage → version-resolver → context → api-diff →
+            ai-reasoning → adr-fix → pr-agent → fortify-writeback
+    """
+    t0 = time.time()
+    try:
+        cfg = _apply_overrides(load_config(), req.config)
+        client, raw_vulns, release_id, app_id = _resolve_vulnerabilities(
+            cfg, 0, None, None, req.app_id
+        )
+        result = _run_full_pipeline(cfg, client, raw_vulns, release_id)
+        result["app_id"] = app_id
         return ok(result, time.time() - t0)
     except Exception as exc:
         return err(str(exc), exc)
@@ -468,8 +553,8 @@ def pipeline_dry_run(req: DryRunRequest):
     t0 = time.time()
     try:
         cfg = _apply_overrides(load_config(), req.config)
-        client, raw_vulns, release_id = _resolve_vulnerabilities(
-            cfg, req.release_id, req.report_path, req.app_name
+        client, raw_vulns, release_id, app_id = _resolve_vulnerabilities(
+            cfg, req.release_id, req.report_path, req.app_name, getattr(req, "app_id", None)
         )
         result = _run_full_pipeline(cfg, client, raw_vulns, release_id, dry_run=True)
         return ok(result, time.time() - t0)
@@ -873,8 +958,8 @@ def _make_partial_endpoint(stop_after: StageLabel):
         t0 = time.time()
         try:
             cfg = _apply_overrides(load_config(), req.config)
-            client, raw_vulns, release_id = _resolve_vulnerabilities(
-                cfg, req.release_id, req.report_path, req.app_name
+            client, raw_vulns, release_id, app_id = _resolve_vulnerabilities(
+                cfg, req.release_id, req.report_path, req.app_name, getattr(req, "app_id", None)
             )
             result = _run_until(cfg, client, raw_vulns, release_id, stop_after)
             return ok(result, time.time() - t0)
