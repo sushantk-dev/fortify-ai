@@ -180,22 +180,26 @@ class ConfigOverrides(BaseModel):
 
 class LivePipelineRequest(BaseModel):
     release_id: int = Field(..., description="Fortify SSC release ID to remediate")
+    repo: Optional[str] = Field(default=None, description="GitHub repo in owner/repo format — overrides GITHUB_REPO from config")
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
 class AppNamePipelineRequest(BaseModel):
     app_name: str = Field(..., description="Fortify application name — resolved to app_id then latest release_id")
+    repo: Optional[str] = Field(default=None, description="GitHub repo in owner/repo format — overrides GITHUB_REPO from config")
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
 class AppIdPipelineRequest(BaseModel):
     app_id: int = Field(..., description="Fortify applicationId — skips name lookup, resolves directly to latest release_id")
+    repo: Optional[str] = Field(default=None, description="GitHub repo in owner/repo format — overrides GITHUB_REPO from config")
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
 class OfflinePipelineRequest(BaseModel):
     report_path: str = Field(..., description="Absolute path to Fortify JSON report on disk")
     release_id: int = Field(default=0, description="Release ID override (0 = read from file)")
+    repo: Optional[str] = Field(default=None, description="GitHub repo in owner/repo format — overrides GITHUB_REPO from config")
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
@@ -205,6 +209,7 @@ class DryRunRequest(BaseModel):
     report_path: Optional[str] = Field(default=None, description="Use offline JSON if provided")
     app_name: Optional[str] = Field(default=None, description="Fortify application name (resolved to app_id → release_id)")
     app_id: Optional[int] = Field(default=None, description="Fortify applicationId (skips name lookup)")
+    repo: Optional[str] = Field(default=None, description="GitHub repo in owner/repo format — overrides GITHUB_REPO from config")
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
@@ -288,6 +293,7 @@ class PartialPipelineRequest(BaseModel):
     report_path: Optional[str] = Field(default=None, description="Offline JSON report path (skips SSC API)")
     app_name: Optional[str] = Field(default=None, description="Fortify application name (resolved to app_id → release_id)")
     app_id: Optional[int] = Field(default=None, description="Fortify applicationId (skips name lookup, resolves to latest release_id)")
+    repo: Optional[str] = Field(default=None, description="GitHub repo in owner/repo format — overrides GITHUB_REPO from config")
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
@@ -311,9 +317,18 @@ def err(detail: str, exc: Exception | None = None) -> JSONResponse:
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _apply_overrides(cfg: FortifyAIConfig, overrides: ConfigOverrides) -> FortifyAIConfig:
-    """Return a new config with non-None override fields applied."""
+def _apply_overrides(cfg: FortifyAIConfig, overrides: ConfigOverrides,
+                     repo: str | None = None) -> FortifyAIConfig:
+    """Return a new config with non-None override fields applied.
+
+    *repo* is a convenience shortcut for ``github_repo`` — equivalent to
+    passing ``config.github_repo`` but exposed as a top-level request field
+    to mirror the ``--repo`` CLI flag.  An explicit ``config.github_repo``
+    value takes precedence if both are supplied.
+    """
     data = cfg.model_dump()
+    if repo is not None:
+        data["github_repo"] = repo
     for field, value in overrides.model_dump().items():
         if value is not None:
             data[field] = value
@@ -704,7 +719,7 @@ async def pipeline_live(req: LivePipelineRequest):
         with _JOBS_LOCK:
             _JOBS[pid]["status"] = "running"
         try:
-            cfg = _apply_overrides(load_config(), req.config)
+            cfg = _apply_overrides(load_config(), req.config, repo=getattr(req, "repo", None))
             client, raw_vulns, release_id, app_id = await loop.run_in_executor(
                 _EXECUTOR,
                 lambda: _resolve_vulnerabilities(cfg, req.release_id, None, None),
@@ -742,7 +757,7 @@ async def pipeline_offline(req: OfflinePipelineRequest):
         with _JOBS_LOCK:
             _JOBS[pid]["status"] = "running"
         try:
-            cfg = _apply_overrides(load_config(), req.config)
+            cfg = _apply_overrides(load_config(), req.config, repo=getattr(req, "repo", None))
             client, raw_vulns, release_id, app_id = await loop.run_in_executor(
                 _EXECUTOR,
                 lambda: _resolve_vulnerabilities(cfg, req.release_id, req.report_path, None),
@@ -785,7 +800,7 @@ async def pipeline_app_name(req: AppNamePipelineRequest):
         with _JOBS_LOCK:
             _JOBS[pid]["status"] = "running"
         try:
-            cfg = _apply_overrides(load_config(), req.config)
+            cfg = _apply_overrides(load_config(), req.config, repo=getattr(req, "repo", None))
             client, raw_vulns, release_id, app_id = await loop.run_in_executor(
                 _EXECUTOR,
                 lambda: _resolve_vulnerabilities(cfg, 0, None, req.app_name),
@@ -827,7 +842,7 @@ async def pipeline_app_id(req: AppIdPipelineRequest):
         with _JOBS_LOCK:
             _JOBS[pid]["status"] = "running"
         try:
-            cfg = _apply_overrides(load_config(), req.config)
+            cfg = _apply_overrides(load_config(), req.config, repo=getattr(req, "repo", None))
             client, raw_vulns, release_id, app_id = await loop.run_in_executor(
                 _EXECUTOR,
                 lambda: _resolve_vulnerabilities(cfg, 0, None, None, req.app_id),
@@ -867,7 +882,7 @@ async def pipeline_dry_run(req: DryRunRequest):
         with _JOBS_LOCK:
             _JOBS[pid]["status"] = "running"
         try:
-            cfg = _apply_overrides(load_config(), req.config)
+            cfg = _apply_overrides(load_config(), req.config, repo=getattr(req, "repo", None))
             client, raw_vulns, release_id, app_id = await loop.run_in_executor(
                 _EXECUTOR,
                 lambda: _resolve_vulnerabilities(
@@ -982,7 +997,7 @@ def stage_version_resolver(req: VersionResolverRequest):
     """
     t0 = time.time()
     try:
-        cfg = _apply_overrides(load_config(), req.config)
+        cfg = _apply_overrides(load_config(), req.config, repo=getattr(req, "repo", None))
         from fortify_client import FortifyClient
         from agents.version_resolver import resolve_all_groups
         client = FortifyClient.from_config(cfg)
@@ -1398,7 +1413,7 @@ def _make_partial_endpoint(stop_after: StageLabel):
             with _JOBS_LOCK:
                 _JOBS[pid]["status"] = "running"
             try:
-                cfg = _apply_overrides(load_config(), req.config)
+                cfg = _apply_overrides(load_config(), req.config, repo=getattr(req, "repo", None))
                 client, raw_vulns, release_id, app_id = await loop.run_in_executor(
                     _EXECUTOR,
                     lambda: _resolve_vulnerabilities(
@@ -1448,5 +1463,4 @@ for _stage in STAGE_ORDER:
 
 if __name__ == "__main__":
     import uvicorn
-    auth_token()
     uvicorn.run("api_server:app", host="0.0.0.0", port=8000, reload=True)
