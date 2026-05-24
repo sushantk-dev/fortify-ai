@@ -374,6 +374,58 @@ def _resolve_vulnerabilities(
     return client, raw_vulns, release_id, resolved_app_id
 
 
+def _clone_repo_if_needed(cfg: FortifyAIConfig, repo: str | None) -> tuple[FortifyAIConfig, str | None]:
+    """
+    Mirror the CLI --repo auto-clone behaviour for the API server.
+
+    If *repo* is provided:
+      1. Overrides cfg.github_repo with *repo*.
+      2. Clones the repo into a temp directory (shallow, depth=1).
+      3. Overrides cfg.project_path with the cloned directory — so ADR,
+         context, api-diff, and every other stage that reads project_path
+         will operate on the fresh clone instead of a stale local path.
+
+    Returns (updated_cfg, clone_dir_or_None).
+    The caller is responsible for cleaning up clone_dir when the pipeline finishes.
+    """
+    import tempfile
+    import subprocess as _sp
+
+    if not repo:
+        return cfg, None
+
+    # 1 — override github_repo
+    object.__setattr__(cfg, "github_repo", repo)
+
+    # 2 — clone
+    repo_url = f"https://{cfg.github_token}@github.com/{cfg.github_repo}.git"
+    clone_dir = tempfile.mkdtemp(prefix="fortifyai_clone_")
+    try:
+        result = _sp.run(
+            ["git", "clone", "--depth", "1", repo_url, clone_dir],
+            capture_output=True, text=True, timeout=300,
+        )
+        if result.returncode != 0:
+            import shutil
+            shutil.rmtree(clone_dir, ignore_errors=True)
+            raise RuntimeError(
+                f"git clone failed for {repo}:\n{result.stderr[:500]}"
+            )
+    except _sp.TimeoutExpired:
+        import shutil
+        shutil.rmtree(clone_dir, ignore_errors=True)
+        raise RuntimeError(f"git clone timed out after 300s for {repo}")
+    except FileNotFoundError:
+        import shutil
+        shutil.rmtree(clone_dir, ignore_errors=True)
+        raise RuntimeError("git not found on PATH — cannot auto-clone repo")
+
+    # 3 — point project_path at the fresh clone so every downstream stage uses it
+    object.__setattr__(cfg, "project_path", clone_dir)
+
+    return cfg, clone_dir
+
+
 def _run_full_pipeline(
     cfg: FortifyAIConfig,
     client,
@@ -797,13 +849,19 @@ async def pipeline_app_name(req: AppNamePipelineRequest):
     async def _run():
         t0 = time.time()
         loop = asyncio.get_event_loop()
+        clone_dir: str | None = None
         with _JOBS_LOCK:
             _JOBS[pid]["status"] = "running"
         try:
             cfg = _apply_overrides(load_config(), req.config)
-            # Mirror CLI behaviour: --repo overrides github_repo and triggers auto-clone
-            if req.repo:
-                object.__setattr__(cfg, "github_repo", req.repo)
+
+            # Mirror CLI --repo: clone the repo and update project_path so ADR
+            # (and every other stage) operates on the fresh clone, not a stale local path.
+            cfg, clone_dir = await loop.run_in_executor(
+                _EXECUTOR,
+                lambda: _clone_repo_if_needed(cfg, req.repo),
+            )
+
             client, raw_vulns, release_id, app_id = await loop.run_in_executor(
                 _EXECUTOR,
                 lambda: _resolve_vulnerabilities(cfg, 0, None, req.app_name),
@@ -818,6 +876,11 @@ async def pipeline_app_name(req: AppNamePipelineRequest):
             _finish_job(pid, "completed", result=result, t0=t0)
         except Exception as exc:
             _finish_job(pid, "failed", error=str(exc), t0=t0)
+        finally:
+            # Always remove the temp clone — mirrors CLI cleanup behaviour
+            if clone_dir:
+                import shutil
+                shutil.rmtree(clone_dir, ignore_errors=True)
 
     asyncio.create_task(_run())
     return ok({"pipeline_id": pid, "status": "queued"})
