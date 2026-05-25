@@ -73,6 +73,7 @@ class AgentState(TypedDict):
     release_id: int                         # Fortify release ID passed via CLI
     vuln_id: Optional[str]                  # Fortify vulnerability UUID (per finding)
     cve_list: list[str]                     # CVE IDs for this dep, e.g. ["CVE-2024-38820"]
+    max_upgrades: int                       # 0 = unlimited; N = cap deps at N (highest severity first)
 
     # ── Fortify finding fields ────────────────────────────────────────────────
     dependency: Optional[DependencyInfo]    # parsed from primaryLocation

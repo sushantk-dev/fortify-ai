@@ -81,6 +81,16 @@ class FortifyAIConfig(BaseSettings):
         ge=1,
         le=10,
     )
+    max_upgrades: int = Field(
+        default=0,
+        description=(
+            "Maximum number of dependencies to upgrade in a single pipeline run. "
+            "0 (default) means no limit — all triaged deps are processed. "
+            "When set, deps are prioritised by severity (Critical → High → Medium → Low) "
+            "and only the top N are forwarded to remediation."
+        ),
+        ge=0,
+    )
     jira_id_prefix: str = Field(
         default="FORTIFY",
         description="Prefix used when generating commit/branch JIRA identifiers",

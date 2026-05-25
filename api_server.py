@@ -171,6 +171,15 @@ class ConfigOverrides(BaseModel):
     gcp_project: Optional[str] = None
     gcp_location: Optional[str] = None
     max_retries: Optional[int] = Field(default=None, ge=1, le=10)
+    max_upgrades: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Maximum number of dependencies to upgrade in this run. "
+            "Deps are prioritised by severity (Critical → High → Medium → Low). "
+            "0 or null means no limit."
+        ),
+    )
     jira_id_prefix: Optional[str] = None
     reviewers: Optional[str] = None
     adr_output_dir: Optional[str] = None
@@ -180,6 +189,11 @@ class ConfigOverrides(BaseModel):
 
 class LivePipelineRequest(BaseModel):
     release_id: int = Field(..., description="Fortify SSC release ID to remediate")
+    max_upgrades: int = Field(
+        default=0,
+        ge=0,
+        description="Max dependencies to upgrade (0 = unlimited, highest severity first)",
+    )
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
@@ -194,17 +208,32 @@ class AppNamePipelineRequest(BaseModel):
             "e.g. \"acme/backend\""
         ),
     )
+    max_upgrades: int = Field(
+        default=0,
+        ge=0,
+        description="Max dependencies to upgrade (0 = unlimited, highest severity first)",
+    )
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
 class AppIdPipelineRequest(BaseModel):
     app_id: int = Field(..., description="Fortify applicationId — skips name lookup, resolves directly to latest release_id")
+    max_upgrades: int = Field(
+        default=0,
+        ge=0,
+        description="Max dependencies to upgrade (0 = unlimited, highest severity first)",
+    )
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
 class OfflinePipelineRequest(BaseModel):
     report_path: str = Field(..., description="Absolute path to Fortify JSON report on disk")
     release_id: int = Field(default=0, description="Release ID override (0 = read from file)")
+    max_upgrades: int = Field(
+        default=0,
+        ge=0,
+        description="Max dependencies to upgrade (0 = unlimited, highest severity first)",
+    )
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
@@ -214,6 +243,11 @@ class DryRunRequest(BaseModel):
     report_path: Optional[str] = Field(default=None, description="Use offline JSON if provided")
     app_name: Optional[str] = Field(default=None, description="Fortify application name (resolved to app_id → release_id)")
     app_id: Optional[int] = Field(default=None, description="Fortify applicationId (skips name lookup)")
+    max_upgrades: int = Field(
+        default=0,
+        ge=0,
+        description="Max dependencies to upgrade (0 = unlimited, highest severity first)",
+    )
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
@@ -235,6 +269,11 @@ class AuthTokenRequest(BaseModel):
 
 class TriageRequest(BaseModel):
     raw_vulnerabilities: list[dict] = Field(..., description="Raw Fortify /vulnerabilities response items")
+    max_upgrades: int = Field(
+        default=0,
+        ge=0,
+        description="Max dependencies to upgrade (0 = unlimited, highest severity first)",
+    )
 
 
 class VersionResolverRequest(BaseModel):
@@ -297,6 +336,11 @@ class PartialPipelineRequest(BaseModel):
     report_path: Optional[str] = Field(default=None, description="Offline JSON report path (skips SSC API)")
     app_name: Optional[str] = Field(default=None, description="Fortify application name (resolved to app_id → release_id)")
     app_id: Optional[int] = Field(default=None, description="Fortify applicationId (skips name lookup, resolves to latest release_id)")
+    max_upgrades: int = Field(
+        default=0,
+        ge=0,
+        description="Max dependencies to upgrade (0 = unlimited, highest severity first)",
+    )
     config: ConfigOverrides = Field(default_factory=ConfigOverrides)
 
 
@@ -433,6 +477,7 @@ def _run_full_pipeline(
     release_id: int,
     dry_run: bool = False,
     pipeline_id: str | None = None,
+    max_upgrades: int = 0,
 ) -> dict:
     """
     Execute the full pipeline and return a summary dict.
@@ -440,7 +485,7 @@ def _run_full_pipeline(
     callers can poll /pipeline/status/{pipeline_id} for live progress.
     """
     from pathlib import Path
-    from agents.triage import group_by_dependency
+    from agents.triage import group_by_dependency, apply_max_upgrades
     from agents.version_resolver import resolve_all_groups
     from agents.context import locate_all_groups
     from agents.api_diff import run_api_diff_all_groups
@@ -482,6 +527,7 @@ def _run_full_pipeline(
     # Stage 1 — triage
     t = _stage_start("triage")
     groups = group_by_dependency(raw_vulns)
+    groups = apply_max_upgrades(groups, max_upgrades or cfg.max_upgrades)
     if not groups:
         _stage_done("triage", t, {"groups_count": 0})
         for s in ["version-resolver", "context", "api-diff",
@@ -773,6 +819,7 @@ async def pipeline_live(req: LivePipelineRequest):
             result = await loop.run_in_executor(
                 _EXECUTOR,
                 lambda: _run_full_pipeline(cfg, client, raw_vulns, release_id,
+                                           max_upgrades=req.max_upgrades,
                                            pipeline_id=pid),
             )
             _finish_job(pid, "completed", result=result, t0=t0)
@@ -811,6 +858,7 @@ async def pipeline_offline(req: OfflinePipelineRequest):
             result = await loop.run_in_executor(
                 _EXECUTOR,
                 lambda: _run_full_pipeline(cfg, client, raw_vulns, release_id,
+                                           max_upgrades=req.max_upgrades,
                                            pipeline_id=pid),
             )
             _finish_job(pid, "completed", result=result, t0=t0)
@@ -869,6 +917,7 @@ async def pipeline_app_name(req: AppNamePipelineRequest):
             result = await loop.run_in_executor(
                 _EXECUTOR,
                 lambda: _run_full_pipeline(cfg, client, raw_vulns, release_id,
+                                           max_upgrades=req.max_upgrades,
                                            pipeline_id=pid),
             )
             result["app_id"] = app_id
@@ -917,6 +966,7 @@ async def pipeline_app_id(req: AppIdPipelineRequest):
             result = await loop.run_in_executor(
                 _EXECUTOR,
                 lambda: _run_full_pipeline(cfg, client, raw_vulns, release_id,
+                                           max_upgrades=req.max_upgrades,
                                            pipeline_id=pid),
             )
             result["app_id"] = app_id
@@ -960,7 +1010,8 @@ async def pipeline_dry_run(req: DryRunRequest):
             result = await loop.run_in_executor(
                 _EXECUTOR,
                 lambda: _run_full_pipeline(cfg, client, raw_vulns, release_id,
-                                           dry_run=True, pipeline_id=pid),
+                                           dry_run=True, max_upgrades=req.max_upgrades,
+                                           pipeline_id=pid),
             )
             _finish_job(pid, "completed", result=result, t0=t0)
         except Exception as exc:
@@ -1044,8 +1095,9 @@ def stage_triage(req: TriageRequest):
     """
     t0 = time.time()
     try:
-        from agents.triage import group_by_dependency
+        from agents.triage import group_by_dependency, apply_max_upgrades
         groups = group_by_dependency(req.raw_vulnerabilities)
+        groups = apply_max_upgrades(groups, req.max_upgrades)
         return ok({"groups": groups, "count": len(groups)}, time.time() - t0)
     except Exception as exc:
         return err(str(exc), exc)
@@ -1327,10 +1379,11 @@ def _run_until(
     release_id: int,
     stop_after: StageLabel,
     pipeline_id: str | None = None,
+    max_upgrades: int = 0,
 ) -> dict:
     """Run the pipeline and stop (inclusive) at `stop_after`, updating the job store per stage."""
     from pathlib import Path
-    from agents.triage import group_by_dependency
+    from agents.triage import group_by_dependency, apply_max_upgrades
     from agents.version_resolver import resolve_all_groups
     from agents.context import locate_all_groups
     from agents.api_diff import run_api_diff_all_groups
@@ -1365,6 +1418,7 @@ def _run_until(
     # Stage 0 — triage
     t = _s_start("triage")
     groups = group_by_dependency(raw_vulns)
+    groups = apply_max_upgrades(groups, max_upgrades or cfg.max_upgrades)
     result["groups"] = groups
     result["groups_count"] = len(groups)
     _s_done("triage", t, {"groups_count": len(groups)})
@@ -1491,7 +1545,8 @@ def _make_partial_endpoint(stop_after: StageLabel):
                 result = await loop.run_in_executor(
                     _EXECUTOR,
                     lambda: _run_until(cfg, client, raw_vulns, release_id,
-                                       stop_after, pipeline_id=pid),
+                                       stop_after, pipeline_id=pid,
+                                       max_upgrades=req.max_upgrades),
                 )
                 _finish_job(pid, "completed", result=result, t0=t0)
             except Exception as exc:

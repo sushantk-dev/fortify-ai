@@ -152,6 +152,43 @@ def group_by_dependency(vulns: list[dict]) -> list[dict[str, Any]]:
     return groups
 
 
+def apply_max_upgrades(groups: list[dict[str, Any]], max_upgrades: int) -> list[dict[str, Any]]:
+    """
+    Cap the number of dependencies forwarded for remediation.
+
+    Groups are sorted by severity (Critical → High → Medium → Low) so the
+    highest-risk items are always processed first when a limit is in effect.
+
+    Args:
+        groups:       Output of group_by_dependency().
+        max_upgrades: Maximum number of deps to keep.  0 = no limit.
+
+    Returns:
+        Filtered (and severity-sorted) list, length ≤ max_upgrades.
+    """
+    if not groups:
+        return groups
+
+    # Always sort by severity so output order is deterministic even without a cap
+    sorted_groups = sorted(
+        groups,
+        key=lambda g: g.get("severity_rank", 0),
+        reverse=True,  # highest severity first
+    )
+
+    if max_upgrades <= 0:
+        return sorted_groups
+
+    capped = sorted_groups[:max_upgrades]
+    dropped = len(sorted_groups) - len(capped)
+    if dropped:
+        logger.info(
+            f"[Triage] ⚠️  max_upgrades={max_upgrades} — "
+            f"capping to {len(capped)} dep(s), {dropped} lower-severity dep(s) deferred"
+        )
+    return capped
+
+
 # ── LangGraph node ────────────────────────────────────────────────────────────
 
 def triage_node(state: AgentState) -> AgentState:
@@ -191,6 +228,10 @@ def triage_node(state: AgentState) -> AgentState:
         })
         return state
 
+    # Apply optional cap — sorts by severity regardless of whether a limit is set
+    max_upgrades: int = state.get("max_upgrades", 0)  # type: ignore[assignment]
+    groups = apply_max_upgrades(groups, max_upgrades)
+
     # Store grouped results back into state for downstream nodes
     state["_triaged_groups"] = groups  # type: ignore[typeddict-unknown-key]
     state["audit_trail"].append({
@@ -198,6 +239,7 @@ def triage_node(state: AgentState) -> AgentState:
         "status": "ok",
         "input_count": len(raw),
         "output_groups": len(groups),
+        "max_upgrades": max_upgrades or "unlimited",
         "deps": [g["parsed"]["artifact_id"] for g in groups],
     })
 

@@ -40,10 +40,11 @@ def configure_logging(verbose: bool = False) -> None:
 
 # ── State factory ─────────────────────────────────────────────────────────────
 
-def initial_state(release_id: int) -> AgentState:
+def initial_state(release_id: int, max_upgrades: int = 0) -> AgentState:
     """Return a fully-typed initial AgentState for a new pipeline run."""
     return AgentState(
         release_id=release_id,
+        max_upgrades=max_upgrades,
         vuln_id=None,
         cve_list=[],
         dependency=None,
@@ -163,6 +164,18 @@ Examples:
         action="store_true",
         help="Enable DEBUG-level logging",
     )
+    parser.add_argument(
+        "--max-upgrades",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "Maximum number of dependencies to upgrade in this run. "
+            "Deps are prioritised by severity (Critical first). "
+            "0 (default) means no limit. "
+            "Overrides MAX_UPGRADES from .env when provided."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -192,6 +205,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.info(f"  Release ID : {args.release}")
     if args.repo:
         logger.info(f"  Repo (CLI) : {args.repo}")
+    logger.info(f"  Max Upgrades: {args.max_upgrades or 'unlimited (0)'}")
     logger.info("=" * 60)
 
     # ── Config ────────────────────────────────────────────────────────────────
@@ -206,6 +220,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.repo:
         object.__setattr__(config, "github_repo", args.repo)
         logger.info(f"[Config] github_repo overridden by --repo: {args.repo}")
+
+    if args.max_upgrades:
+        object.__setattr__(config, "max_upgrades", args.max_upgrades)
+        logger.info(f"[Config] max_upgrades overridden by --max-upgrades: {args.max_upgrades}")
 
     # ── Validate required fields based on mode ────────────────────────────────
     errors = []
@@ -362,8 +380,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # ── Triage ────────────────────────────────────────────────────────────────
     logger.info("─" * 60)
-    from agents.triage import group_by_dependency
+    from agents.triage import group_by_dependency, apply_max_upgrades
     groups = group_by_dependency(raw_vulns)
+    groups = apply_max_upgrades(groups, config.max_upgrades)
 
     if not groups:
         logger.warning("[Triage] No actionable findings — nothing to remediate")
