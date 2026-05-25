@@ -299,18 +299,43 @@ def create_pull_request(
         base_branch = "main"
 
     # ── Create PR ─────────────────────────────────────────────────────────────
+    # GitHub requires head in "owner:branch" format when the branch was pushed
+    # from a cloned repo (e.g. via --repo auto-clone). Without the prefix the
+    # API returns 422 {"field": "head", "code": "invalid"}.
+    repo_owner = github_repo.split("/")[0] if "/" in github_repo else ""
+    head_ref   = f"{repo_owner}:{branch_name}" if repo_owner else branch_name
+
     try:
         pr = repo.create_pull(
             title=title,
             body=body,
-            head=branch_name,
+            head=head_ref,
             base=base_branch,
             draft=is_draft,
         )
         logger.info(f"[PR] ✅ PR created: {pr.html_url}")
     except Exception as exc:
-        logger.error(f"[PR] Failed to create PR: {exc}")
-        return PrResult(pr_url="", pr_number=0, is_draft=is_draft)
+        # Retry with bare branch name — works when the repo is not a fork
+        if repo_owner and head_ref != branch_name:
+            logger.warning(
+                f"[PR] create_pull failed with '{head_ref}': {exc} — "
+                f"retrying with bare branch '{branch_name}'"
+            )
+            try:
+                pr = repo.create_pull(
+                    title=title,
+                    body=body,
+                    head=branch_name,
+                    base=base_branch,
+                    draft=is_draft,
+                )
+                logger.info(f"[PR] ✅ PR created (bare branch): {pr.html_url}")
+            except Exception as exc2:
+                logger.error(f"[PR] Failed to create PR: {exc2}")
+                return PrResult(pr_url="", pr_number=0, is_draft=is_draft)
+        else:
+            logger.error(f"[PR] Failed to create PR: {exc}")
+            return PrResult(pr_url="", pr_number=0, is_draft=is_draft)
 
     # ── Labels ────────────────────────────────────────────────────────────────
     try:
