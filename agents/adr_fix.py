@@ -253,18 +253,26 @@ def run_adr_fix(
     commit_id = _build_commit_id(group, jira_prefix)
 
     # Build the target-versions payload for adr_fortify.py.
-    # Key format: "groupId:artifactId" — matches what pom.xml parse produces.
-    coord_key = f"{parsed['group_id']}:{parsed['artifact_id']}"
+    # Key format must match what adr_fortify.py produces when parsing pom.xml:
+    # "groupId:artifactId" — both sides come from the same Fortify primaryLocation.
+    # We also include an artifactId-only key as a fallback in case the pom parser
+    # resolves the groupId differently (e.g. via ${project.groupId} inheritance).
+    coord_key      = f"{parsed['group_id']}:{parsed['artifact_id']}"
+    coord_key_bare = parsed['artifact_id']   # fallback: match on artifactId alone
+
+    version_entry = {
+        "safe_version": candidate,
+        "severity":     group.get("severity", "High"),
+        "cve_id":       group.get("cves", [""])[0],
+    }
     target_versions = {
-        coord_key: {
-            "safe_version": candidate,
-            "severity":     group.get("severity", "High"),
-            "cve_id":       group.get("cves", [""])[0],
-        }
+        coord_key:      version_entry,
+        coord_key_bare: version_entry,   # bare artifactId fallback
     }
 
     logger.info(f"[ADR Fix] Applying {artifact_id} {current_version} → {candidate}")
     logger.info(f"[ADR Fix] Commit ID: {commit_id}")
+    logger.info(f"[ADR Fix] Target key: '{coord_key}' (bare fallback: '{coord_key_bare}')")
 
     success, stdout, stderr = invoke_adr(
         adr_path, project_path, commit_id, target_versions=target_versions

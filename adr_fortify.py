@@ -2923,15 +2923,33 @@ def main():
         # After Phase 1 parsing, deps have groupId/artifactId but no safe_version.
         # We annotate each dep that appears in _target_map so the findings builder
         # and apply_fixes can work exactly as before.
+        #
+        # Fallback: also try artifactId-only key in case the pom parser resolves
+        # groupId differently (e.g. via ${project.groupId} parent inheritance).
         if _target_map:
             for dep in deps:
                 coord = f"{dep['groupId']}:{dep['artifactId']}"
-                target = _target_map.get(coord)
+                target = _target_map.get(coord) or _target_map.get(dep['artifactId'])
                 if target:
                     dep["safe_version"]   = target.get("safe_version", "")
                     dep["severity"]       = target.get("severity", "High")
                     dep["cve_id"]         = target.get("cve_id", "")
                     dep["latest_version"] = target.get("safe_version", "")
+                    print(f"  {C.CYAN}[Fortify]{C.RESET}  Matched '{coord}' → safe version {dep['safe_version']}")
+
+            # Warn about any target keys that matched nothing in the parsed deps
+            matched_coords = {
+                f"{dep['groupId']}:{dep['artifactId']}"
+                for dep in deps if dep.get("safe_version")
+            }
+            matched_bare = {
+                dep['artifactId']
+                for dep in deps if dep.get("safe_version")
+            }
+            for key in _target_map:
+                if key not in matched_coords and key not in matched_bare:
+                    print(f"  {C.YELLOW}[WARN] Target key '{key}' did not match any dep in pom.xml "
+                          f"— check groupId spelling or parent inheritance{C.RESET}")
 
         # Findings come pre-resolved from the Fortify pipeline (triage → version_resolver).
         # Each dep dict carries safe_version, severity, and cve_id set upstream.
